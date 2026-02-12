@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "peerjs": "^1.5.5",
+    "react-router-dom": "^7.13.0"
+  }
+}
