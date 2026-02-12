@@ -1,9 +1,16 @@
+import React from 'react';
+import { Routes, Route } from 'react-router-dom';
+import Home from './pages/Home';
+import MeetingRoom from './pages/MeetingRoom';
+
 function App() {
   return (
-    <div>
-      <h1>Witaj w aplikacji do spotkań</h1>
-    </div>
-  )
+    // Tutaj React sprawdza routing
+    <Routes>
+      <Route path="/" element={<Home />} />
+      <Route path="/room/:roomId" element={<MeetingRoom />} />
+    </Routes>
+  );
 }
 
-export default App
+export default App;

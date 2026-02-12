@@ -1,0 +1,22 @@
+# --- Systemowe ---
+.DS_Store
+.vscode/
+.idx/
+
+# --- Frontend (Node.js) ---
+node_modules/
+dist/
+build/
+.env
+.env.local
+
+# --- Backend (Python) ---
+# To jest kluczowe dla Twoich 1000 plików:
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+backend/.venv/
+backend/venv/
