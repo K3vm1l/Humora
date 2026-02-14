@@ -21,6 +21,12 @@ export default function Lobby() {
     // User Nickname State
     const [userName, setUserName] = useState('')
 
+    // Remote AI Connection State
+    const [useRemoteAi, setUseRemoteAi] = useState(false)
+    const [tailscaleIp, setTailscaleIp] = useState(() => {
+        return localStorage.getItem('tailscaleIp') || ''
+    })
+
     useEffect(() => {
         const startPreview = async () => {
             try {
@@ -119,14 +125,19 @@ export default function Lobby() {
     const handleJoinMeeting = () => {
         if (!userName.trim()) return
 
+        // Save IP for future
+        if (tailscaleIp) {
+            localStorage.setItem('tailscaleIp', tailscaleIp)
+        }
+
         // Explicitly stop all tracks before navigating to release hardware
         if (stream) {
             stream.getTracks().forEach(track => {
                 track.stop()
             })
         }
-        // Navigate to the actual meeting room with userName in state
-        navigate(`/meeting/${roomId}`, { state: { userName } })
+        // Navigate to the actual meeting room with userName and AI settings
+        navigate(`/meeting/${roomId}`, { state: { userName, useRemoteAi, tailscaleIp } })
     }
 
     const getEmotionColor = (emotionString) => {
@@ -270,6 +281,29 @@ export default function Lobby() {
                                     placeholder="Wpisz swój nick..."
                                     className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all font-medium"
                                 />
+                            </div>
+
+                            {/* Connection Settings */}
+                            <div className="space-y-3 bg-gray-800/30 p-4 rounded-xl border border-white/5">
+                                <div className="flex items-center justify-between">
+                                    <label className="text-sm font-medium text-gray-300">Połącz z zewnętrznym AI (Tailscale)</label>
+                                    <button
+                                        onClick={() => setUseRemoteAi(!useRemoteAi)}
+                                        className={`w-12 h-6 rounded-full p-1 transition-colors duration-300 ${useRemoteAi ? 'bg-green-500' : 'bg-gray-600'}`}
+                                    >
+                                        <div className={`w-4 h-4 rounded-full bg-white shadow-md transform transition-transform duration-300 ${useRemoteAi ? 'translate-x-6' : 'translate-x-0'}`} />
+                                    </button>
+                                </div>
+
+                                {useRemoteAi && (
+                                    <input
+                                        type="text"
+                                        value={tailscaleIp}
+                                        onChange={(e) => setTailscaleIp(e.target.value)}
+                                        placeholder="IP kolegi, np. 100.x.x.x"
+                                        className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-green-500 transition-all font-mono"
+                                    />
+                                )}
                             </div>
 
                             <button

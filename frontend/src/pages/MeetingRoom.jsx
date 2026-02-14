@@ -1,15 +1,20 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import Peer from 'peerjs'
+import { LineChart, Line, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
 
 export default function MeetingRoom() {
     const { roomId } = useParams()
     const navigate = useNavigate()
     const location = useLocation()
     const userName = location.state?.userName || 'Gość'
+    const useRemoteAi = location.state?.useRemoteAi || false
+    const tailscaleIp = location.state?.tailscaleIp || ''
+
     const [myPeerId, setMyPeerId] = useState('')
     const [remotePeerId, setRemotePeerId] = useState('')
     const [aiData, setAiData] = useState(null)
+    const [history, setHistory] = useState([])
     const [isAiConnected, setIsAiConnected] = useState(false)
 
     const videoRef = useRef(null)
@@ -17,6 +22,7 @@ export default function MeetingRoom() {
     const peerInstance = useRef(null)
     const wsRef = useRef(null)
     const localStreamRef = useRef(null)
+    const isProcessingRef = useRef(false)
 
     // Robust cleanup function
     const performCleanup = () => {
@@ -85,7 +91,13 @@ export default function MeetingRoom() {
     }, [])
 
     useEffect(() => {
-        wsRef.current = new WebSocket('ws://localhost:8000/ws/analyze')
+        // Dynamic WebSocket URL
+        const wsUrl = (useRemoteAi && tailscaleIp)
+            ? `ws://${tailscaleIp}:8000/ws/analyze`
+            : 'ws://localhost:8000/ws/analyze'
+
+        console.log(`Attempting connection to AI at: ${wsUrl}`)
+        wsRef.current = new WebSocket(wsUrl)
         let intervalId
 
         wsRef.current.onopen = () => {
@@ -93,15 +105,53 @@ export default function MeetingRoom() {
             setIsAiConnected(true)
             intervalId = setInterval(() => {
                 if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                    wsRef.current.send('ping')
+                    // Optimized video sending
+                    if (!isProcessingRef.current && videoRef.current) {
+                        try {
+                            isProcessingRef.current = true // Lock
+                            const canvas = document.createElement('canvas')
+                            canvas.width = 320 // Downscale
+                            canvas.height = 240
+                            const ctx = canvas.getContext('2d')
+                            ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height)
+                            const base64Data = canvas.toDataURL('image/jpeg', 0.5) // Compress
+                            wsRef.current.send(base64Data)
+                        } catch (err) {
+                            console.error("Frame capture error:", err)
+                            isProcessingRef.current = false
+                        }
+                    } else if (wsRef.current.readyState === WebSocket.OPEN) {
+                        // Keep-alive if not sending video
+                        // wsRef.current.send('ping') -> Using ping here might conflict if video is frequent
+                    }
                 }
-            }, 1000)
+            }, 1000) // 1 FPS
         }
 
         wsRef.current.onmessage = (event) => {
             try {
+                isProcessingRef.current = false // Unlock
                 const data = JSON.parse(event.data)
                 setAiData(data)
+
+                // Update History
+                console.log("Otrzymane aiData:", data)
+                if (data && data.emotion) {
+                    setHistory(prev => {
+                        const newScore = getEmotionScore(data.emotion)
+                        // Safety: Skip invalid scores to prevent chart crashes
+                        if (typeof newScore !== 'number' || isNaN(newScore)) return prev
+
+                        const newPoint = {
+                            time: new Date().toLocaleTimeString('pl-PL', { hour12: false, hour: "numeric", minute: "numeric", second: "numeric" }),
+                            score: newScore,
+                            emotion: data.emotion.split(' ')[0]
+                        }
+                        const newHistory = [...prev, newPoint]
+                        return newHistory.slice(-30) // Keep last 30 points
+                    })
+                }
+
             } catch (e) {
                 console.error('Error parsing AI data:', e)
             }
@@ -117,7 +167,7 @@ export default function MeetingRoom() {
                 wsRef.current.close()
             }
         }
-    }, [])
+    }, [useRemoteAi, tailscaleIp])
 
     const callUser = (remoteId) => {
         const stream = window.localStream || localStreamRef.current
@@ -139,9 +189,21 @@ export default function MeetingRoom() {
         window.location.href = '/'
     }
 
+    // Helper to get score from emotion
+    const getEmotionScore = (emotionString) => {
+        if (!emotionString || typeof emotionString !== 'string') return 0
+        const emotion = emotionString.toLowerCase().trim()
+        if (emotion.includes('happy') || emotion.includes('joy') || emotion.includes('radość') || emotion.includes('szczęście')) return 100
+        if (emotion.includes('surprise') || emotion.includes('zaskoczenie')) return 70
+        if (emotion.includes('neutral') || emotion.includes('naturalny')) return 50
+        if (emotion.includes('sad') || emotion.includes('fear') || emotion.includes('disgust') || emotion.includes('smutek') || emotion.includes('strach') || emotion.includes('obrzydzenie')) return 20
+        if (emotion.includes('angry') || emotion.includes('anger') || emotion.includes('złość') || emotion.includes('gniew')) return 10
+        return 0 // Default fallback
+    }
+
     // Helper to determine emotion color
     const getEmotionColor = (emotionString) => {
-        if (!emotionString) return 'text-white'
+        if (!emotionString || typeof emotionString !== 'string') return 'text-white'
         const emotion = emotionString.split(' ')[0].toLowerCase()
         if (['radość', 'szczęście'].includes(emotion)) return 'text-green-400 drop-shadow-[0_0_10px_rgba(74,222,128,0.5)]'
         if (['złość', 'gniew'].includes(emotion)) return 'text-red-500 drop-shadow-[0_0_10px_rgba(239,68,68,0.5)]'
@@ -149,6 +211,18 @@ export default function MeetingRoom() {
         if (['strach', 'lęk'].includes(emotion)) return 'text-purple-400 drop-shadow-[0_0_10px_rgba(192,132,252,0.5)]'
         if (['zaskoczenie'].includes(emotion)) return 'text-yellow-400 drop-shadow-[0_0_10px_rgba(250,204,21,0.5)]'
         return 'text-white'
+    }
+
+    // Helper for Hex color for Chart Line
+    const getEmotionHexColor = (emotionString) => {
+        if (!emotionString || typeof emotionString !== 'string') return '#8b5cf6'
+        const emotion = emotionString.split(' ')[0].toLowerCase()
+        if (['radość', 'szczęście', 'happy', 'joy'].some(e => emotion.includes(e))) return '#4ade80' // green-400
+        if (['złość', 'gniew', 'angry'].some(e => emotion.includes(e))) return '#ef4444' // red-500
+        if (['smutek', 'sad'].some(e => emotion.includes(e))) return '#60a5fa' // blue-400
+        if (['strach', 'lęk', 'fear'].some(e => emotion.includes(e))) return '#c084fc' // purple-400
+        if (['zaskoczenie', 'surprise'].some(e => emotion.includes(e))) return '#facc15' // yellow-400
+        return '#8b5cf6' // default violet
     }
 
     // Extract percentage from emotion string if present
@@ -182,38 +256,61 @@ export default function MeetingRoom() {
         ctx.setTransform(1, 0, 0, 1, 0, 0) // Reset for text
 
         // Overlay Styles
-        const gradient = ctx.createLinearGradient(0, 0, 0, 150)
-        gradient.addColorStop(0, 'rgba(0,0,0,0.8)')
+        const gradient = ctx.createLinearGradient(0, 0, 0, 300)
+        gradient.addColorStop(0, 'rgba(0,0,0,0.9)')
         gradient.addColorStop(1, 'rgba(0,0,0,0)')
         ctx.fillStyle = gradient
-        ctx.fillRect(0, 0, canvas.width, 150)
+        ctx.fillRect(0, 0, canvas.width, 300)
 
-        // Text Config
-        ctx.font = 'bold 32px monospace'
+        // Text Shadow Config
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.8)'
+        ctx.shadowBlur = 4
+        ctx.shadowOffsetX = 2
+        ctx.shadowOffsetY = 2
+
+        let yPos = 40
+
+        // Title
+        ctx.font = 'bold 30px monospace'
         ctx.fillStyle = '#ffffff'
-        ctx.fillText('HUMORA AI REPORT', 24, 50)
+        ctx.fillText('HUMORA AI REPORT', 24, yPos)
+        yPos += 35
 
-        // Add Nickname to Report
-        ctx.font = '24px monospace'
-        ctx.fillStyle = '#fbbf24' // amber-400
-        ctx.fillText(`USER: ${userName.toUpperCase()}`, 24, 90)
+        // User
+        ctx.font = '22px monospace'
+        ctx.fillStyle = '#fbbf24' // amber
+        ctx.fillText(`USER: ${userName?.toUpperCase() || 'ANONYMOUS'}`, 24, yPos)
+        yPos += 30
 
-        ctx.font = '20px monospace'
-        ctx.fillStyle = '#cccccc'
-        ctx.fillText(new Date().toLocaleString(), 24, 120)
+        // Date
+        ctx.font = '18px monospace'
+        ctx.fillStyle = '#9ca3af' // gray
+        ctx.fillText(new Date().toLocaleString('pl-PL'), 24, yPos)
+        yPos += 40
 
+        // AI Data
         if (aiData) {
-            ctx.font = 'bold 24px monospace'
-            ctx.fillStyle = '#4ade80' // Green-400
-            ctx.fillText(`EMOTION: ${aiData.emotion.toUpperCase()}`, 24, 160)
+            // Emotion
+            ctx.font = 'bold 22px monospace'
+            ctx.fillStyle = '#4ade80' // green
+            const emotionText = aiData.emotion ? aiData.emotion.split(' ')[0].toUpperCase() : 'UNKNOWN'
+            ctx.fillText(`EMOTION: ${emotionText}`, 24, yPos)
+            yPos += 35
 
-            ctx.textAlign = 'right'
-            ctx.fillStyle = '#ffffff'
-            ctx.fillText(`AGE: ${aiData.age} | GENDER: ${aiData.gender}`, canvas.width - 24, 160)
+            // Age
+            ctx.font = 'bold 22px monospace'
+            ctx.fillStyle = '#fbbf24' // amber
+            ctx.fillText(`AGE: ${aiData.age || '--'}`, 24, yPos)
+            yPos += 35
+
+            // Gender
+            ctx.font = 'bold 22px monospace'
+            ctx.fillStyle = '#ffffff' // white
+            ctx.fillText(`GENDER: ${aiData.gender || '--'}`, 24, yPos)
         } else {
             ctx.font = 'italic 20px monospace'
             ctx.fillStyle = '#aaaaaa'
-            ctx.fillText('Waiting for analysis...', 24, 160)
+            ctx.fillText('Waiting for analysis...', 24, yPos)
         }
 
         // Download
@@ -301,7 +398,12 @@ export default function MeetingRoom() {
                 <div className="p-4 border-b border-gray-800 flex items-center justify-between">
                     <div>
                         <h2 className="font-semibold text-lg tracking-wide text-gray-100">ANALYTICS</h2>
-                        <p className="text-xs text-gray-400 font-mono mt-1">Profil: {userName}</p>
+                        <div className="flex items-center gap-2 mt-1">
+                            <span className={`w-2 h-2 rounded-full ${useRemoteAi ? 'bg-green-500' : 'bg-orange-500'}`}></span>
+                            <span className="text-[10px] text-gray-400 uppercase tracking-wider font-mono">
+                                {useRemoteAi ? 'Połączono: Tailscale AI' : 'Połączono: Lokalny Test'}
+                            </span>
+                        </div>
                     </div>
                     <div className="flex items-center gap-2">
                         <span className={`w-2 h-2 rounded-full ${isAiConnected ? 'bg-green-500 animate-pulse' : 'bg-yellow-500'}`}></span>
@@ -316,7 +418,7 @@ export default function MeetingRoom() {
                     <div className="space-y-2">
                         <label className="text-xs font-bold text-gray-500 uppercase tracking-widest block">Główna Emocja</label>
                         <div className="bg-gray-800/50 rounded-xl p-4 border border-gray-700/50 text-center">
-                            {aiData ? (
+                            {aiData && aiData.emotion ? (
                                 <>
                                     <div className={`text-3xl font-bold mb-1 ${getEmotionColor(aiData.emotion)}`}>
                                         {aiData.emotion.split(' ')[0]}
@@ -334,17 +436,41 @@ export default function MeetingRoom() {
                         </div>
                     </div>
 
+                    {/* Emotion Trend Chart */}
+                    <div className="space-y-2">
+                        <label className="text-xs font-bold text-gray-500 uppercase tracking-widest block">Trend Emocjonalny</label>
+                        <div className="bg-gray-800/30 rounded-xl p-2 border border-gray-700/30 h-48">
+                            <ResponsiveContainer width="100%" height="100%">
+                                <LineChart data={history}>
+                                    <XAxis dataKey="time" hide />
+                                    <Tooltip
+                                        contentStyle={{ backgroundColor: '#111827', borderColor: '#374151', fontSize: '12px' }}
+                                        itemStyle={{ color: '#e5e7eb' }}
+                                    />
+                                    <Line
+                                        type="monotone"
+                                        dataKey="score"
+                                        stroke={aiData && aiData.emotion ? getEmotionHexColor(aiData.emotion) : '#8b5cf6'}
+                                        strokeWidth={3}
+                                        dot={false}
+                                        isAnimationActive={false}
+                                    />
+                                </LineChart>
+                            </ResponsiveContainer>
+                        </div>
+                    </div>
+
                     {/* Stats Grid */}
                     <div className="grid grid-cols-2 gap-4">
-                        <div className="bg-gray-800/30 p-4 rounded-xl border border-gray-700/30">
+                        <div className="bg-gray-800/30 rounded-xl border border-gray-700/30 min-w-0 flex flex-col items-center justify-center p-2 md:p-3 overflow-hidden">
                             <label className="text-[10px] text-gray-500 uppercase tracking-widest block mb-1">Wiek</label>
-                            <div className="text-2xl font-mono text-white/90">
+                            <div className="text-white/90 font-mono w-full text-center text-xs sm:text-sm md:text-base font-bold truncate">
                                 {aiData ? aiData.age : '--'}
                             </div>
                         </div>
-                        <div className="bg-gray-800/30 p-4 rounded-xl border border-gray-700/30">
+                        <div className="bg-gray-800/30 rounded-xl border border-gray-700/30 min-w-0 flex flex-col items-center justify-center p-2 md:p-3 overflow-hidden">
                             <label className="text-[10px] text-gray-500 uppercase tracking-widest block mb-1">Płeć</label>
-                            <div className="text-2xl font-mono text-white/90">
+                            <div className="text-white/90 font-mono w-full text-center text-xs sm:text-sm md:text-base font-bold truncate">
                                 {aiData ? aiData.gender : '--'}
                             </div>
                         </div>
