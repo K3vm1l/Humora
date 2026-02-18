@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import Peer from 'peerjs'
 import { LineChart, Line, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
+import supabase from '../supabaseClient'
 
 export default function MeetingRoom() {
     const { roomId } = useParams()
@@ -13,6 +14,17 @@ export default function MeetingRoom() {
 
     const [myPeerId, setMyPeerId] = useState('')
     const [remotePeerId, setRemotePeerId] = useState('')
+    const [remoteUserName, setRemoteUserName] = useState('Oczekiwanie...')
+
+    // Media Control State (Initialized from Lobby)
+    const [isAudioMuted, setIsAudioMuted] = useState(location.state?.startMuted || false)
+    const [isVideoOff, setIsVideoOff] = useState(location.state?.startVideoOff || false)
+
+    // Chat State
+    const [messages, setMessages] = useState([])
+    const [chatInput, setChatInput] = useState('')
+    const chatScrollRef = useRef(null)
+
     const [aiData, setAiData] = useState(null)
     const [history, setHistory] = useState([])
     const [isAiConnected, setIsAiConnected] = useState(false)
@@ -23,72 +35,120 @@ export default function MeetingRoom() {
     const wsRef = useRef(null)
     const localStreamRef = useRef(null)
     const isProcessingRef = useRef(false)
+    const roomChannelRef = useRef(null)
 
     // Robust cleanup function
-    const performCleanup = () => {
-        const stream = window.localStream || localStreamRef.current
-        if (stream) {
-            stream.getTracks().forEach(track => {
-                track.stop()
-                console.log('Track stopped:', track.kind)
-            })
-        }
-        window.localStream = null
-        localStreamRef.current = null
 
-        if (videoRef.current) {
-            videoRef.current.srcObject = null
-        }
-
-        if (wsRef.current) {
-            wsRef.current.close()
-        }
-
-        if (peerInstance.current) {
-            peerInstance.current.destroy()
-        }
-    }
 
     useEffect(() => {
-        const startVideo = async () => {
+        let isMounted = true;
+        let myStream = null;
+        let myPeer = null;
+        let roomChannel = null;
+
+        const initRoom = async () => {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+                // 1. GET MEDIA FIRST
+                myStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
 
-                // Store globally and in ref for robust access
-                window.localStream = stream
-                localStreamRef.current = stream
+                // Apply initial mute states (from Lobby)
+                const initialAudioMuted = location.state?.startMuted || false
+                const initialVideoOff = location.state?.startVideoOff || false
 
-                if (videoRef.current) {
-                    videoRef.current.srcObject = stream
+                myStream.getAudioTracks().forEach(t => t.enabled = !initialAudioMuted)
+                myStream.getVideoTracks().forEach(t => t.enabled = !initialVideoOff)
+
+                // If component unmounted while waiting for camera, kill it immediately
+                if (!isMounted) {
+                    myStream.getTracks().forEach(t => t.stop())
+                    return
                 }
 
-                const peer = new Peer()
-                peerInstance.current = peer
+                // Save to refs for the UI to control
+                localStreamRef.current = myStream
+                // Also update global variable if used elsewhere, though ref is preferred
+                window.localStream = myStream
 
-                peer.on('open', (id) => {
+                if (videoRef.current) videoRef.current.srcObject = myStream
+
+                // 2. INITIALIZE PEERJS ONLY AFTER MEDIA IS READY
+                myPeer = new Peer()
+                peerInstance.current = myPeer
+
+                myPeer.on('open', (id) => {
                     setMyPeerId(id)
+
+                    // 3. SETUP SUPABASE SIGNALING
+                    roomChannel = supabase.channel(`room-${roomId}`)
+                    roomChannelRef.current = roomChannel
+
+                    roomChannel.subscribe(async (status) => {
+                        if (status === 'SUBSCRIBED') {
+                            await roomChannel.send({
+                                type: 'broadcast',
+                                event: 'peer-joined',
+                                payload: { peerId: id, userName: userName }
+                            })
+                        }
+                    })
+
+                    roomChannel.on('broadcast', { event: 'peer-joined' }, (payload) => {
+                        const { peerId: remotePeerId, userName: remoteName } = payload.payload;
+                        console.log('Peer joined:', remoteName, remotePeerId)
+                        setRemoteUserName(remoteName);
+
+                        // Call other peer with our ONLY stream
+                        const call = myPeer.call(remotePeerId, myStream, { metadata: { callerName: userName } })
+                        call.on('stream', (remoteStream) => {
+                            if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream
+                        })
+                    })
+                        .on('broadcast', { event: 'chat-message' }, (payload) => {
+                            setMessages((prev) => {
+                                if (prev.some(msg => msg.id === payload.payload.id)) return prev;
+                                return [...prev, payload.payload];
+                            });
+                        });
                 })
 
-                peer.on('call', (call) => {
-                    call.answer(stream)
+                // 4. ANSWER INCOMING CALLS
+                myPeer.on('call', (call) => {
+                    if (call.metadata?.callerName) setRemoteUserName(call.metadata.callerName)
+                    call.answer(myStream) // Answer with our ONLY stream
                     call.on('stream', (remoteStream) => {
-                        if (remoteVideoRef.current) {
-                            remoteVideoRef.current.srcObject = remoteStream
-                        }
+                        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream
                     })
                 })
 
             } catch (err) {
-                console.error("Error accessing media devices:", err)
+                console.error('Błąd kamery/mikrofonu:', err)
             }
         }
 
-        startVideo()
+        initRoom()
 
+        // 5. BULLETPROOF CLEANUP (KILLS GHOSTS)
         return () => {
-            performCleanup()
+            isMounted = false
+
+            // 1. Forcefully detach streams from the HTML video elements
+            if (videoRef.current) videoRef.current.srcObject = null
+            if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null
+
+            if (myStream) myStream.getTracks().forEach(track => {
+                track.stop()
+                track.enabled = false
+            })
+            if (myPeer) myPeer.destroy()
+            if (roomChannel) supabase.removeChannel(roomChannel)
+
+            // Clean refs
+            localStreamRef.current = null
+            window.localStream = null
+            peerInstance.current = null
+            roomChannelRef.current = null
         }
-    }, [])
+    }, [roomId, userName, location.state])
 
     useEffect(() => {
         // Dynamic WebSocket URL
@@ -184,10 +244,81 @@ export default function MeetingRoom() {
         })
     }
 
-    const leaveMeeting = () => {
-        performCleanup()
-        window.location.href = '/'
+    const leaveRoom = () => {
+        // 1. Forcefully detach streams from the HTML video elements
+        if (videoRef.current) videoRef.current.srcObject = null;
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+
+        // 2. Stop all hardware tracks aggressively
+        if (localStreamRef.current) {
+            localStreamRef.current.getTracks().forEach(track => {
+                track.stop();
+                track.enabled = false;
+            });
+            localStreamRef.current = null; // Clear the ref
+        }
+
+        // 3. Destroy Peer connection
+        if (peerInstance.current) {
+            peerInstance.current.destroy();
+            peerInstance.current = null;
+        }
+
+        // 4. Navigate home
+        navigate('/');
     }
+
+    const toggleAudio = () => {
+        setIsAudioMuted(prev => {
+            const newState = !prev;
+            if (localStreamRef.current) {
+                localStreamRef.current.getAudioTracks().forEach(track => track.enabled = !newState);
+            }
+            return newState;
+        });
+    };
+
+    const toggleVideo = () => {
+        setIsVideoOff(prev => {
+            const newState = !prev;
+            if (localStreamRef.current) {
+                localStreamRef.current.getVideoTracks().forEach(track => track.enabled = !newState);
+            }
+            return newState;
+        });
+    };
+
+    const handleSendMessage = async (e) => {
+        e.preventDefault()
+        if (!chatInput.trim()) return
+
+        const newMessage = {
+            id: crypto.randomUUID(),
+            sender: userName,
+            text: chatInput.trim(),
+            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        }
+
+        // Optimistic update
+        setMessages((prev) => [...prev, newMessage])
+        setChatInput('')
+
+        // Broadcast to others
+        if (roomChannelRef.current) {
+            await roomChannelRef.current.send({
+                type: 'broadcast',
+                event: 'chat-message',
+                payload: newMessage
+            })
+        }
+    }
+
+    // Auto-scroll chat
+    useEffect(() => {
+        if (chatScrollRef.current) {
+            chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight
+        }
+    }, [messages])
 
     // Helper to get score from emotion
     const getEmotionScore = (emotionString) => {
@@ -356,7 +487,9 @@ export default function MeetingRoom() {
                                 playsInline
                                 className="w-full h-full object-cover"
                             />
-                            <div className="absolute bottom-4 right-4 bg-black/50 px-2 py-1 rounded text-xs text-white">Rozmówca</div>
+                            <div className="absolute bottom-4 right-4 bg-black/50 px-2 py-1 rounded text-xs text-white">
+                                {remoteUserName}
+                            </div>
                             <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-0 peer-checked:opacity-100">
                                 {/* Waiting logic */}
                             </div>
@@ -366,23 +499,25 @@ export default function MeetingRoom() {
 
                 {/* Controls (Floating centered in main area) */}
                 <div className="fixed bottom-8 left-1/2 md:left-[calc(50%-10rem)] transform -translate-x-1/2 bg-gray-900/90 backdrop-blur-lg border border-gray-800 p-4 rounded-full shadow-2xl flex items-center gap-4 z-50">
-                    <input
-                        type="text"
-                        placeholder="ID rozmówcy..."
-                        value={remotePeerId}
-                        onChange={(e) => setRemotePeerId(e.target.value)}
-                        className="bg-gray-800 text-white px-4 py-2 rounded-full border border-gray-700 focus:outline-none focus:border-blue-500 w-32 md:w-48 text-sm"
-                    />
                     <button
-                        onClick={() => callUser(remotePeerId)}
-                        className="bg-green-600 hover:bg-green-500 text-white p-3 rounded-full transition-colors shadow-lg shadow-green-900/20"
-                        title="Zadzwoń"
+                        onClick={toggleAudio}
+                        className={`p-4 rounded-full transition-all ${isAudioMuted ? 'bg-red-500 hover:bg-red-600' : 'bg-gray-700 hover:bg-gray-600'}`}
+                        title={isAudioMuted ? "Włącz mikrofon" : "Wycisz mikrofon"}
                     >
-                        📞
+                        {isAudioMuted ? '🔇' : '🎤'}
                     </button>
-                    <div className="w-px h-8 bg-gray-700 mx-2"></div>
                     <button
-                        onClick={leaveMeeting}
+                        onClick={toggleVideo}
+                        className={`p-4 rounded-full transition-all ${isVideoOff ? 'bg-red-500 hover:bg-red-600' : 'bg-gray-700 hover:bg-gray-600'}`}
+                        title={isVideoOff ? "Włącz kamerę" : "Wyłącz kamerę"}
+                    >
+                        {isVideoOff ? '🚫' : '📷'}
+                    </button>
+
+                    <div className="w-px h-8 bg-gray-700 mx-2"></div>
+
+                    <button
+                        onClick={leaveRoom}
                         className="bg-red-600 hover:bg-red-700 text-white p-4 rounded-full transition-colors shadow-lg shadow-red-900/20 flex items-center justify-center"
                         title="Rozłącz"
                     >
@@ -501,6 +636,53 @@ export default function MeetingRoom() {
                         <span className="text-xl group-hover:rotate-12 transition-transform">📸</span>
                         <span>CAPTURE REPORT</span>
                     </button>
+
+                    {/* Chat Section */}
+                    <div className="flex flex-col h-80 bg-gray-800/80 border border-gray-700 rounded-xl overflow-hidden mt-4 shadow-inner">
+                        <div className="bg-gray-800 p-3 text-sm font-semibold text-gray-300 border-b border-gray-700 flex items-center gap-2">
+                            <span>💬</span> Czat na żywo
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar" ref={chatScrollRef}>
+                            {messages.length === 0 && (
+                                <p className="text-xs text-gray-500 text-center mt-4">Brak wiadomości. Rozpocznij czat!</p>
+                            )}
+                            {messages.map((msg) => {
+                                const isMe = msg.sender === userName
+                                return (
+                                    <div key={msg.id} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                                        <div className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${isMe
+                                            ? 'bg-blue-600 text-white rounded-br-none'
+                                            : 'bg-gray-700 text-gray-200 rounded-bl-none'
+                                            }`}>
+                                            {!isMe && <div className="text-[10px] font-bold text-gray-400 mb-0.5">{msg.sender}</div>}
+                                            {msg.text}
+                                        </div>
+                                        <span className="text-[10px] text-gray-500 mt-1 px-1">
+                                            {msg.time}
+                                        </span>
+                                    </div>
+                                )
+                            })}
+                        </div>
+
+                        <form onSubmit={handleSendMessage} className="flex p-2 bg-gray-900 border-t border-gray-700">
+                            <input
+                                type="text"
+                                value={chatInput}
+                                onChange={(e) => setChatInput(e.target.value)}
+                                placeholder="Napisz..."
+                                className="flex-1 bg-gray-800 text-white rounded-l-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 border border-transparent focus:border-blue-500 transition-all placeholder-gray-500"
+                            />
+                            <button
+                                type="submit"
+                                disabled={!chatInput.trim()}
+                                className="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 px-4 rounded-r-md text-white font-medium transition-colors text-sm"
+                            >
+                                ➤
+                            </button>
+                        </form>
+                    </div>
 
                 </div>
             </div>

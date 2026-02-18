@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.96.0",
     "@tailwindcss/postcss": "^4.1.18",
     "peerjs": "^1.5.2",
     "react": "^18.2.0",

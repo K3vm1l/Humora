@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import supabase from '../supabaseClient'
 
 export default function Lobby() {
     const { roomId } = useParams()
@@ -20,6 +21,7 @@ export default function Lobby() {
 
     // User Nickname State
     const [userName, setUserName] = useState('')
+    const [isLoggedIn, setIsLoggedIn] = useState(false)
 
     // Remote AI Connection State
     const [useRemoteAi, setUseRemoteAi] = useState(false)
@@ -28,9 +30,39 @@ export default function Lobby() {
     })
 
     useEffect(() => {
+        const fetchUserProfile = async () => {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (session) {
+                setIsLoggedIn(true);
+                const { data } = await supabase.from('profiles').select('username').eq('id', session.user.id).single();
+                if (data) {
+                    setUserName(data.username);
+                }
+            }
+        };
+        fetchUserProfile();
+    }, []);
+
+    useEffect(() => {
+        let isMounted = true
+        let myStream = null
+
         const startPreview = async () => {
             try {
+                // Cleanup old streams first (Phantom Stream Fix)
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop())
+                }
+
                 const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+
+                // THE CRITICAL CHECK: If the user clicked 'Back' before the camera loaded
+                if (!isMounted) {
+                    mediaStream.getTracks().forEach(track => { track.stop(); track.enabled = false; });
+                    return;
+                }
+
+                myStream = mediaStream
                 setStream(mediaStream)
 
                 if (videoRef.current) {
@@ -48,10 +80,12 @@ export default function Lobby() {
                 setIsAudioEnabled(true)
 
             } catch (err) {
-                console.error("Lobby: Error access media", err)
-                setError('Nie można uzyskać dostępu do kamery lub mikrofonu. Sprawdź uprawnienia.')
-                setCamStatus('error')
-                setMicStatus('error')
+                if (isMounted) {
+                    console.error("Lobby: Error access media", err)
+                    setError('Nie można uzyskać dostępu do kamery lub mikrofonu. Sprawdź uprawnienia.')
+                    setCamStatus('error')
+                    setMicStatus('error')
+                }
             }
         }
 
@@ -59,8 +93,22 @@ export default function Lobby() {
 
         // Cleanup function to stop tracks when component unmounts (or when joining)
         return () => {
+            isMounted = false // Signals pending promises to abort
+
+            // Clean local variable stream
+            if (myStream) {
+                myStream.getTracks().forEach(track => { track.stop(); track.enabled = false; });
+            }
+
+            // Clean state stream if it exists (though myStream handles the immediate reference)
             if (stream) {
-                stream.getTracks().forEach(track => track.stop())
+                stream.getTracks().forEach(track => {
+                    track.stop()
+                    track.enabled = false
+                })
+            }
+            if (videoRef.current) {
+                videoRef.current.srcObject = null
             }
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -103,23 +151,34 @@ export default function Lobby() {
     }, [])
 
     const toggleAudio = () => {
-        if (stream) {
-            const audioTrack = stream.getAudioTracks()[0]
-            if (audioTrack) {
-                audioTrack.enabled = !audioTrack.enabled
-                setIsAudioEnabled(audioTrack.enabled)
+        setIsAudioEnabled(prev => {
+            const newState = !prev
+            if (stream) {
+                stream.getAudioTracks().forEach(track => track.enabled = newState)
             }
-        }
+            return newState
+        })
     }
 
     const toggleVideo = () => {
-        if (stream) {
-            const videoTrack = stream.getVideoTracks()[0]
-            if (videoTrack) {
-                videoTrack.enabled = !videoTrack.enabled
-                setIsVideoEnabled(videoTrack.enabled)
+        setIsVideoEnabled(prev => {
+            const newState = !prev
+            if (stream) {
+                stream.getVideoTracks().forEach(track => track.enabled = newState)
             }
+            return newState
+        })
+    }
+
+    const handleGoBack = () => {
+        if (stream) {
+            stream.getTracks().forEach(track => { track.stop(); track.enabled = false; });
+            setStream(null)
         }
+        if (videoRef.current) {
+            videoRef.current.srcObject = null
+        }
+        navigate('/')
     }
 
     const handleJoinMeeting = () => {
@@ -131,13 +190,27 @@ export default function Lobby() {
         }
 
         // Explicitly stop all tracks before navigating to release hardware
+        // Explicitly stop all tracks before navigating to release hardware
         if (stream) {
             stream.getTracks().forEach(track => {
                 track.stop()
+                track.enabled = false
             })
+            setStream(null)
+        }
+        if (videoRef.current) {
+            videoRef.current.srcObject = null
         }
         // Navigate to the actual meeting room with userName and AI settings
-        navigate(`/meeting/${roomId}`, { state: { userName, useRemoteAi, tailscaleIp } })
+        navigate(`/meeting/${roomId}`, {
+            state: {
+                userName,
+                useRemoteAi,
+                tailscaleIp,
+                startMuted: !isAudioEnabled,
+                startVideoOff: !isVideoEnabled
+            }
+        })
     }
 
     const getEmotionColor = (emotionString) => {
@@ -150,7 +223,13 @@ export default function Lobby() {
     }
 
     return (
-        <div className="min-h-screen bg-gray-950 flex flex-col items-center justify-center p-6 text-white overflow-hidden">
+        <div className="min-h-screen bg-gray-950 flex flex-col items-center justify-center p-6 text-white overflow-hidden relative">
+            <button
+                onClick={handleGoBack}
+                className="absolute top-6 left-6 flex items-center gap-2 text-gray-400 hover:text-white transition-colors font-medium z-50 cursor-pointer"
+            >
+                <span className="text-xl">⬅️</span> Wróć
+            </button>
 
             {/* Background Ambience */}
             <div className="absolute top-0 left-0 w-full h-full overflow-hidden pointer-events-none z-0">
@@ -272,16 +351,23 @@ export default function Lobby() {
 
                         {/* Join Section with Nickname */}
                         <div className="space-y-4">
-                            <div className="space-y-1">
-                                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest ml-1">Twój Nick</label>
-                                <input
-                                    type="text"
-                                    value={userName}
-                                    onChange={(e) => setUserName(e.target.value)}
-                                    placeholder="Wpisz swój nick..."
-                                    className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all font-medium"
-                                />
-                            </div>
+                            {isLoggedIn ? (
+                                <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 text-center mb-4">
+                                    <p className="text-gray-400 text-sm">Dołączasz jako:</p>
+                                    <p className="text-white font-bold text-lg">{userName}</p>
+                                </div>
+                            ) : (
+                                <div className="space-y-1">
+                                    <label className="text-xs font-bold text-gray-500 uppercase tracking-widest ml-1">Twój Nick</label>
+                                    <input
+                                        type="text"
+                                        value={userName}
+                                        onChange={(e) => setUserName(e.target.value)}
+                                        placeholder="Wpisz swój nick..."
+                                        className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all font-medium"
+                                    />
+                                </div>
+                            )}
 
                             {/* Connection Settings */}
                             <div className="space-y-3 bg-gray-800/30 p-4 rounded-xl border border-white/5">
