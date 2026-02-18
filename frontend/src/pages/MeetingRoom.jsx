@@ -9,12 +9,15 @@ export default function MeetingRoom() {
     const navigate = useNavigate()
     const location = useLocation()
     const userName = location.state?.userName || 'Gość'
-    const useRemoteAi = location.state?.useRemoteAi || false
-    const tailscaleIp = location.state?.tailscaleIp || ''
+    const { isAIEnabled = false, aiIP = '' } = location.state || {}
 
     const [myPeerId, setMyPeerId] = useState('')
     const [remotePeerId, setRemotePeerId] = useState('')
     const [remoteUserName, setRemoteUserName] = useState('Oczekiwanie...')
+    const [raisedHands, setRaisedHands] = useState(new Set())
+    const [remoteUserId, setRemoteUserId] = useState(null)
+    const [session, setSession] = useState(null)
+    const [currentMeetingId, setCurrentMeetingId] = useState(null)
 
     // Media Control State (Initialized from Lobby)
     const [isAudioMuted, setIsAudioMuted] = useState(location.state?.startMuted || false)
@@ -28,14 +31,17 @@ export default function MeetingRoom() {
     const [aiData, setAiData] = useState(null)
     const [history, setHistory] = useState([])
     const [isAiConnected, setIsAiConnected] = useState(false)
+    const [debugFrame, setDebugFrame] = useState(null) // DEBUG: Visualise sent frame
 
     const videoRef = useRef(null)
     const remoteVideoRef = useRef(null)
     const peerInstance = useRef(null)
-    const wsRef = useRef(null)
+    const aiSocketRef = useRef(null)
     const localStreamRef = useRef(null)
     const isProcessingRef = useRef(false)
     const roomChannelRef = useRef(null)
+    const isSocketReadyRef = useRef(false) // Safe flag for startup delay
+    const lastActivityRef = useRef(Date.now()) // Watchdog Ref
 
     // Robust cleanup function
 
@@ -48,8 +54,15 @@ export default function MeetingRoom() {
 
         const initRoom = async () => {
             try {
-                // 1. GET MEDIA FIRST
-                myStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+                // Get session for user ID
+                const { data: { session: currentSession } } = await supabase.auth.getSession()
+                setSession(currentSession)
+
+                // 1. GET MEDIA FIRST (Force HD 1280x720 for AI)
+                myStream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+                    audio: true
+                })
 
                 // Apply initial mute states (from Lobby)
                 const initialAudioMuted = location.state?.startMuted || false
@@ -87,37 +100,84 @@ export default function MeetingRoom() {
                             await roomChannel.send({
                                 type: 'broadcast',
                                 event: 'peer-joined',
-                                payload: { peerId: id, userName: userName }
+                                payload: { peerId: id, userName: userName, userId: currentSession?.user?.id }
                             })
                         }
                     })
 
                     roomChannel.on('broadcast', { event: 'peer-joined' }, (payload) => {
-                        const { peerId: remotePeerId, userName: remoteName } = payload.payload;
+                        const { peerId: remotePeerId, userName: remoteName, userId: remoteDbId } = payload.payload;
                         console.log('Peer joined:', remoteName, remotePeerId)
                         setRemoteUserName(remoteName);
+                        setRemoteUserId(remoteDbId);
+
+                        setRemoteUserId(remoteDbId);
 
                         // Call other peer with our ONLY stream
-                        const call = myPeer.call(remotePeerId, myStream, { metadata: { callerName: userName } })
+                        const call = myPeer.call(remotePeerId, myStream, {
+                            metadata: {
+                                callerName: userName,
+                                callerUserId: currentSession?.user?.id // <--- Send Host ID
+                            }
+                        })
                         call.on('stream', (remoteStream) => {
                             if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream
                         })
+
+                        // Start Meeting Recording (Host)
+                        if (!currentMeetingId) {
+                            supabase.from('meetings').insert([{
+                                host_id: currentSession?.user?.id,
+                                participant_name: remoteName,
+                                started_at: new Date().toISOString()
+                            }]).select().single()
+                                .then(({ data, error }) => {
+                                    if (data) setCurrentMeetingId(data.id);
+                                    if (error) console.error('Error starting meeting:', error);
+                                });
+                        }
                     })
                         .on('broadcast', { event: 'chat-message' }, (payload) => {
                             setMessages((prev) => {
                                 if (prev.some(msg => msg.id === payload.payload.id)) return prev;
                                 return [...prev, payload.payload];
                             });
+                        })
+                        .on('broadcast', { event: 'hand-toggle' }, ({ payload }) => {
+                            setRaisedHands(prev => {
+                                const newSet = new Set(prev);
+                                if (payload.isRaised) newSet.add(payload.userId);
+                                else newSet.delete(payload.userId);
+                                return newSet;
+                            });
                         });
                 })
 
                 // 4. ANSWER INCOMING CALLS
                 myPeer.on('call', (call) => {
-                    if (call.metadata?.callerName) setRemoteUserName(call.metadata.callerName)
+                    // Extract Host's ID from metadata
+                    if (call.metadata) {
+                        if (call.metadata.callerName) setRemoteUserName(call.metadata.callerName);
+                        if (call.metadata.callerUserId) setRemoteUserId(call.metadata.callerUserId); // <--- Save Host ID
+                    }
+
                     call.answer(myStream) // Answer with our ONLY stream
                     call.on('stream', (remoteStream) => {
                         if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream
                     })
+
+                    // Start Meeting Recording (Guest)
+                    if (!currentMeetingId) {
+                        supabase.from('meetings').insert([{
+                            host_id: currentSession?.user?.id, // Note: This will be the guest's ID in their own record
+                            participant_name: call.metadata?.callerName || 'Host',
+                            started_at: new Date().toISOString()
+                        }]).select().single()
+                            .then(({ data, error }) => {
+                                if (data) setCurrentMeetingId(data.id);
+                                if (error) console.error('Error starting meeting (Guest):', error);
+                            });
+                    }
                 })
 
             } catch (err) {
@@ -151,83 +211,339 @@ export default function MeetingRoom() {
     }, [roomId, userName, location.state])
 
     useEffect(() => {
-        // Dynamic WebSocket URL
-        const wsUrl = (useRemoteAi && tailscaleIp)
-            ? `ws://${tailscaleIp}:8000/ws/analyze`
-            : 'ws://localhost:8000/ws/analyze'
+        // --- NEW STRICT MODE IMPLEMENTATION ---
+        let intervalId = null;
 
-        console.log(`Attempting connection to AI at: ${wsUrl}`)
-        wsRef.current = new WebSocket(wsUrl)
-        let intervalId
-
-        wsRef.current.onopen = () => {
-            console.log('Connected to AI backend')
-            setIsAiConnected(true)
+        if (!isAIEnabled || !aiIP) {
+            // --- MOCK MODE ---
+            console.log("🎲 AI Disabled/Missing IP. Starting Mock Data.");
             intervalId = setInterval(() => {
-                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                    // Optimized video sending
-                    if (!isProcessingRef.current && videoRef.current) {
-                        try {
-                            isProcessingRef.current = true // Lock
-                            const canvas = document.createElement('canvas')
-                            canvas.width = 320 // Downscale
-                            canvas.height = 240
-                            const ctx = canvas.getContext('2d')
-                            ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height)
-                            const base64Data = canvas.toDataURL('image/jpeg', 0.5) // Compress
-                            wsRef.current.send(base64Data)
-                        } catch (err) {
-                            console.error("Frame capture error:", err)
-                            isProcessingRef.current = false
-                        }
-                    } else if (wsRef.current.readyState === WebSocket.OPEN) {
-                        // Keep-alive if not sending video
-                        // wsRef.current.send('ping') -> Using ping here might conflict if video is frequent
-                    }
+                const mockData = {
+                    emotion: ['Radość 😃', 'Smutek 😔', 'Złość 😠', 'Neutralny 😐', 'Zaskoczenie 😲'][Math.floor(Math.random() * 5)],
+                    age: Math.floor(Math.random() * (60 - 18 + 1)) + 18,
+                    gender: Math.random() > 0.5 ? 'Mężczyzna' : 'Kobieta'
+                };
+                setAiData(mockData);
+
+                if (mockData.emotion) {
+                    setHistory(prev => {
+                        const newScore = getEmotionScore(mockData.emotion);
+                        if (typeof newScore !== 'number' || isNaN(newScore)) return prev;
+                        const newPoint = {
+                            time: new Date().toLocaleTimeString('pl-PL', { hour12: false, hour: "numeric", minute: "numeric", second: "numeric" }),
+                            score: newScore,
+                            emotion: mockData.emotion.split(' ')[0]
+                        };
+                        return [...prev, newPoint].slice(-30);
+                    });
                 }
-            }, 1000) // 1 FPS
+            }, 2000);
+
+            return () => clearInterval(intervalId);
         }
 
-        wsRef.current.onmessage = (event) => {
-            try {
-                isProcessingRef.current = false // Unlock
-                const data = JSON.parse(event.data)
-                setAiData(data)
+        // --- AI MODE (Strict Mode Safe) ---
+        const cleanIP = aiIP.replace(/https?:\/\//, '');
+        const wsUrl = `ws://${cleanIP}:8000/ws/analyze`;
+        console.log("🔗 Connecting to AI:", wsUrl);
 
-                // Update History
-                console.log("Otrzymane aiData:", data)
-                if (data && data.emotion) {
+        const ws = new WebSocket(wsUrl);
+
+        // --- WATCHDOG SYSTEM (Inside Effect) ---
+        const watchdogInterval = setInterval(() => {
+            // If AI is enabled, socket connected, and no activity for 3s
+            if (ws.readyState === WebSocket.OPEN && (Date.now() - lastActivityRef.current > 3000)) {
+                console.warn("🐶 Watchdog: No AI response for 3s. Kickstarting loop...");
+                isProcessingRef.current = false; // Force unlock
+                sendFrame(); // Still inside closure, so safe to call
+            }
+        }, 1000);
+
+        const sendFrame = () => {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+            const video = videoRef.current;
+            // 2 = HAVE_CURRENT_DATA (Enough for a frame)
+            if (!video || video.readyState < 2 || video.videoWidth === 0) {
+                console.log("⏳ Video not ready yet (or width 0), retrying...");
+                setTimeout(sendFrame, 500); // Retry in 500ms
+                return;
+            }
+
+            if (!isProcessingRef.current) {
+                try {
+                    isProcessingRef.current = true;
+                    lastActivityRef.current = Date.now(); // Update Watchdog
+
+                    // HD Quality
+                    const w = 1280;
+                    const h = 720; // Or video.videoHeight if you prefer dynamic
+
+                    const canvas = document.createElement('canvas');
+                    canvas.width = w;
+                    canvas.height = h;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(video, 0, 0, w, h);
+
+                    const frameData = canvas.toDataURL("image/jpeg", 0.9);
+                    setDebugFrame(frameData); // DEBUG: Show what we send
+                    const sizeKB = Math.round(frameData.length / 1024);
+                    console.log('💎 Sending HD Frame. Size:', sizeKB, 'KB');
+                    ws.send(frameData);
+
+                } catch (e) {
+                    console.error("Frame capture error:", e);
+                    isProcessingRef.current = false;
+                }
+            }
+        };
+
+        ws.onopen = () => {
+            console.log("✅ AI Connected. Starting Loop...");
+            aiSocketRef.current = ws;
+            isSocketReadyRef.current = true;
+            setIsAiConnected(true);
+            lastActivityRef.current = Date.now();
+
+            // KICKSTART LOOP ONCE
+            sendFrame();
+        };
+
+        ws.onmessage = (event) => {
+            console.log('📢 EMERGENCY LOG: Something arrived!', event.data);
+            try {
+                isProcessingRef.current = false; // Unlock
+                lastActivityRef.current = Date.now(); // Update Watchdog
+
+                if (event.data === "PONG") return;
+
+                const data = JSON.parse(event.data);
+
+                if (data.emotion || data.age) {
+                    setAiData(data);
+                    if (data.emotion) {
+                        setHistory(prev => {
+                            const newScore = getEmotionScore(data.emotion);
+                            if (typeof newScore !== 'number' || isNaN(newScore)) return prev;
+                            const newPoint = {
+                                time: new Date().toLocaleTimeString('pl-PL', { hour12: false, hour: "numeric", minute: "numeric", second: "numeric" }),
+                                score: newScore,
+                                emotion: data.emotion.split(' ')[0]
+                            };
+                            return [...prev, newPoint].slice(-30);
+                        });
+                    }
+                }
+
+                // PING-PONG: Strict Request-Response
+                // Only send next frame AFTER processing is done + 200ms delay
+                setTimeout(() => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        sendFrame();
+                    }
+                }, 200);
+
+            } catch (e) {
+                console.error("Parse Error. Raw Data:", event.data, e);
+                isProcessingRef.current = false;
+                // Retry if parse fails but backoff
+                setTimeout(() => {
+                    if (ws.readyState === WebSocket.OPEN) sendFrame();
+                }, 1000);
+            }
+        };
+
+        ws.onclose = () => {
+            console.log("❌ AI Disconnected");
+            setIsAiConnected(false);
+        };
+
+        ws.onerror = (e) => console.error("🔥 AI Error", e);
+
+        // Cleanup
+        /*
+        let socket = null;
+        let intervalId = null;
+
+        if (isAIEnabled && aiIP) {
+            // --- AI MODE ---
+            const cleanIP = aiIP.replace(/https?:\/\//, '');
+            const WS_URL = `ws://${cleanIP}:8000/ws/analyze`;
+            console.log("🔗 Connecting to AI:", WS_URL);
+
+            socket = new WebSocket(WS_URL);
+
+            socket.onopen = () => {
+                console.log("✅ AI Connected");
+                aiSocketRef.current = socket;
+                setIsAiConnected(true);
+
+                // Send initial PING
+                try {
+                    socket.send("PING");
+                } catch (e) {
+                    console.error("Failed to send initial PING:", e);
+                }
+
+                // Startup Delay
+                const startSending = () => {
+                    isSocketReadyRef.current = true;
+                    console.log("🚀 AI: Ready to send frames");
+                    sendNextFrame(); // Kickstart the loop
+                };
+                setTimeout(startSending, 1000);
+            };
+
+            // 3. THE "PING-PONG" SENDING FUNCTION
+            const sendNextFrame = () => {
+                if (
+                    aiSocketRef.current &&
+                    aiSocketRef.current.readyState === WebSocket.OPEN &&
+                    isAIEnabled &&
+                    isSocketReadyRef.current
+                ) {
+                    if (!isProcessingRef.current && videoRef.current && videoRef.current.readyState === 4) {
+                        try {
+                            isProcessingRef.current = true; // Lock
+
+                            // Frame Logic (Low Res 320x240)
+                            const video = videoRef.current;
+                            // aspect ratio scaling or fixed, 320x240 is safe
+                            const w = 320;
+                            const h = 240;
+
+                            const canvas = document.createElement('canvas');
+                            canvas.width = w;
+                            canvas.height = h;
+                            const ctx = canvas.getContext('2d');
+                            ctx.drawImage(video, 0, 0, w, h);
+
+                            // Compress
+                            const frameData = canvas.toDataURL('image/jpeg', 0.5);
+                            aiSocketRef.current.send(frameData);
+
+                        } catch (err) {
+                            console.error("Frame capture error:", err);
+                            isProcessingRef.current = false;
+                            // Retry after short delay
+                            setTimeout(sendNextFrame, 1000);
+                        }
+                    } else {
+                        // Video not ready or processing, check again soon
+                        setTimeout(sendNextFrame, 100);
+                    }
+                }
+            };
+
+            socket.onmessage = (event) => {
+                try {
+                    isProcessingRef.current = false; // Unlock
+                    const text = event.data;
+
+                    if (text === "PONG") return;
+
+                    const data = JSON.parse(text);
+
+                    // CASE A: Processing
+                    if (data.status === "processing") {
+                        // console.log("🔍 AI Processing...");
+                    }
+                    // CASE B: Valid Data
+                    else if (data.emotion || data.age) {
+                        setAiData(data);
+                        // Update History Logic
+                        if (data.emotion) {
+                            setHistory(prev => {
+                                const newScore = getEmotionScore(data.emotion);
+                                if (typeof newScore !== 'number' || isNaN(newScore)) return prev;
+
+                                const newPoint = {
+                                    time: new Date().toLocaleTimeString('pl-PL', { hour12: false, hour: "numeric", minute: "numeric", second: "numeric" }),
+                                    score: newScore,
+                                    emotion: data.emotion.split(' ')[0]
+                                };
+                                return [...prev, newPoint].slice(-30);
+                            });
+                        }
+                    }
+
+                    // CRITICAL: TRIGGER NEXT FRAME
+                    setTimeout(() => {
+                        sendNextFrame();
+                    }, 50); // 50ms delay
+
+                } catch (e) {
+                    console.error("Parse error", e);
+                    isProcessingRef.current = false;
+                    setTimeout(sendNextFrame, 1000); // Retry logic
+                }
+            };
+
+            socket.onclose = (event) => {
+                console.log("❌ AI: Disconnected:", event.code, event.reason);
+                setIsAiConnected(false);
+                aiSocketRef.current = null;
+            };
+
+            socket.onerror = (error) => {
+                console.error("🔥 AI: Connection Error", error);
+            };
+
+        } else {
+            // --- MOCK MODE ---
+            console.log("🎲 AI Disabled/Missing IP. Starting Mock Data.");
+            intervalId = setInterval(() => {
+                const mockData = {
+                    emotion: ['Radość 😃', 'Smutek 😔', 'Złość 😠', 'Neutralny 😐', 'Zaskoczenie 😲'][Math.floor(Math.random() * 5)],
+                    age: Math.floor(Math.random() * (60 - 18 + 1)) + 18,
+                    gender: Math.random() > 0.5 ? 'Mężczyzna' : 'Kobieta'
+                };
+                setAiData(mockData);
+
+                // Update History Logic for Mock
+                if (mockData.emotion) {
                     setHistory(prev => {
-                        const newScore = getEmotionScore(data.emotion)
-                        // Safety: Skip invalid scores to prevent chart crashes
-                        if (typeof newScore !== 'number' || isNaN(newScore)) return prev
+                        const newScore = getEmotionScore(mockData.emotion);
+                        if (typeof newScore !== 'number' || isNaN(newScore)) return prev;
 
                         const newPoint = {
                             time: new Date().toLocaleTimeString('pl-PL', { hour12: false, hour: "numeric", minute: "numeric", second: "numeric" }),
                             score: newScore,
-                            emotion: data.emotion.split(' ')[0]
-                        }
-                        const newHistory = [...prev, newPoint]
-                        return newHistory.slice(-30) // Keep last 30 points
-                    })
+                            emotion: mockData.emotion.split(' ')[0]
+                        };
+                        return [...prev, newPoint].slice(-30);
+                    });
                 }
+            }, 2000);
+        }
 
-            } catch (e) {
-                console.error('Error parsing AI data:', e)
+        // --- CLEANUP ---
+        return () => {
+            if (socket) {
+                if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+                    socket.close();
+                }
             }
-        }
-
-        wsRef.current.onclose = () => {
-            setIsAiConnected(false)
-        }
+            if (intervalId) clearInterval(intervalId);
+            if (aiSocketRef.current === socket) {
+                aiSocketRef.current = null;
+                isSocketReadyRef.current = false;
+            }
+        };
+        */
 
         return () => {
-            clearInterval(intervalId)
-            if (wsRef.current) {
-                wsRef.current.close()
+            console.log("🧹 Cleaning up WebSocket");
+            if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+                ws.close();
             }
-        }
-    }, [useRemoteAi, tailscaleIp])
+            if (watchdogInterval) clearInterval(watchdogInterval);
+            if (aiSocketRef.current === ws) {
+                aiSocketRef.current = null;
+                isSocketReadyRef.current = false;
+            }
+        };
+    }, [isAIEnabled, aiIP]);
 
     const callUser = (remoteId) => {
         const stream = window.localStream || localStreamRef.current
@@ -244,7 +560,15 @@ export default function MeetingRoom() {
         })
     }
 
-    const leaveRoom = () => {
+    const leaveRoom = async () => {
+        // 0. End Meeting Recording
+        if (currentMeetingId) {
+            const endTime = new Date()
+            await supabase.from('meetings').update({
+                ended_at: endTime.toISOString(),
+            }).eq('id', currentMeetingId)
+        }
+
         // 1. Forcefully detach streams from the HTML video elements
         if (videoRef.current) videoRef.current.srcObject = null;
         if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
@@ -286,6 +610,28 @@ export default function MeetingRoom() {
             }
             return newState;
         });
+    };
+
+    const toggleHand = async () => {
+        const myId = session?.user?.id;
+        if (!myId) return;
+        const isRaised = raisedHands.has(myId);
+
+        // Optimistic update
+        setRaisedHands(prev => {
+            const next = new Set(prev);
+            if (isRaised) next.delete(myId);
+            else next.add(myId);
+            return next;
+        });
+        // Broadcast to room
+        if (roomChannelRef.current) {
+            await roomChannelRef.current.send({
+                type: 'broadcast',
+                event: 'hand-toggle',
+                payload: { userId: myId, isRaised: !isRaised }
+            });
+        }
     };
 
     const handleSendMessage = async (e) => {
@@ -444,11 +790,50 @@ export default function MeetingRoom() {
             ctx.fillText('Waiting for analysis...', 24, yPos)
         }
 
-        // Download
-        const link = document.createElement('a')
-        link.download = `humora-report-${userName}-${Date.now()}.png`
-        link.href = canvas.toDataURL('image/png')
-        link.click()
+        // Download / Save Logic
+        if (currentMeetingId) {
+            canvas.toBlob(async (blob) => {
+                if (!blob) return;
+                const fileName = `capture-${currentMeetingId}-${Date.now()}.png`
+
+                // Upload to Storage
+                const { data: uploadData, error: uploadError } = await supabase.storage
+                    .from('captures') // Assuming 'captures' bucket exists
+                    .upload(fileName, blob)
+
+                if (uploadError) {
+                    console.error('Error uploading capture:', uploadError)
+                    // Fallback to download if upload fails?
+                    const link = document.createElement('a')
+                    link.download = fileName
+                    link.href = canvas.toDataURL('image/png')
+                    link.click()
+                    return
+                }
+
+                // Get Public URL
+                const { data: { publicUrl } } = supabase.storage.from('captures').getPublicUrl(fileName)
+
+                // Insert into DB
+                const { error: insertError } = await supabase.from('captures').insert([{
+                    meeting_id: currentMeetingId,
+                    image_url: publicUrl
+                }])
+
+                if (insertError) {
+                    console.error('Error saving capture to DB:', insertError)
+                } else {
+                    alert('Raport zapisany w bazie!')
+                }
+
+            }, 'image/png')
+        } else {
+            // Fallback for Guests/No Meeting ID (or just legacy download)
+            const link = document.createElement('a')
+            link.download = `humora-report-${userName}-${Date.now()}.png`
+            link.href = canvas.toDataURL('image/png')
+            link.click()
+        }
     }
 
     return (
@@ -474,6 +859,7 @@ export default function MeetingRoom() {
                                 muted
                                 className="w-full h-full object-cover transform -scale-x-100"
                             />
+                            {session?.user?.id && raisedHands.has(session.user.id) && <div className="absolute top-2 left-2 text-4xl animate-bounce z-10 filter drop-shadow-lg">✋</div>}
                             <div className="absolute bottom-4 right-4 bg-black/50 px-2 py-1 rounded text-xs text-white z-20">
                                 {userName} (Ty)
                             </div>
@@ -487,6 +873,7 @@ export default function MeetingRoom() {
                                 playsInline
                                 className="w-full h-full object-cover"
                             />
+                            {remoteUserId && raisedHands.has(remoteUserId) && <div className="absolute top-2 left-2 text-4xl animate-bounce z-10 filter drop-shadow-lg">✋</div>}
                             <div className="absolute bottom-4 right-4 bg-black/50 px-2 py-1 rounded text-xs text-white">
                                 {remoteUserName}
                             </div>
@@ -514,6 +901,14 @@ export default function MeetingRoom() {
                         {isVideoOff ? '🚫' : '📷'}
                     </button>
 
+                    <button
+                        onClick={toggleHand}
+                        className={`p-4 rounded-full transition-all ${session?.user?.id && raisedHands.has(session.user.id) ? 'bg-yellow-500 hover:bg-yellow-600 text-black' : 'bg-gray-700 hover:bg-gray-600 text-white'}`}
+                        title="Podnieś rękę"
+                    >
+                        ✋
+                    </button>
+
                     <div className="w-px h-8 bg-gray-700 mx-2"></div>
 
                     <button
@@ -534,9 +929,9 @@ export default function MeetingRoom() {
                     <div>
                         <h2 className="font-semibold text-lg tracking-wide text-gray-100">ANALYTICS</h2>
                         <div className="flex items-center gap-2 mt-1">
-                            <span className={`w-2 h-2 rounded-full ${useRemoteAi ? 'bg-green-500' : 'bg-orange-500'}`}></span>
+                            <span className={`w-2 h-2 rounded-full ${isAIEnabled ? 'bg-green-500' : 'bg-orange-500'}`}></span>
                             <span className="text-[10px] text-gray-400 uppercase tracking-wider font-mono">
-                                {useRemoteAi ? 'Połączono: Tailscale AI' : 'Połączono: Lokalny Test'}
+                                {isAIEnabled ? `${aiIP}` : 'AI DISABLED'}
                             </span>
                         </div>
                     </div>
@@ -574,7 +969,7 @@ export default function MeetingRoom() {
                     {/* Emotion Trend Chart */}
                     <div className="space-y-2">
                         <label className="text-xs font-bold text-gray-500 uppercase tracking-widest block">Trend Emocjonalny</label>
-                        <div className="bg-gray-800/30 rounded-xl p-2 border border-gray-700/30 h-48">
+                        <div className="bg-gray-800/30 rounded-xl p-2 border border-gray-700/30 w-full h-64 min-h-[250px]">
                             <ResponsiveContainer width="100%" height="100%">
                                 <LineChart data={history}>
                                     <XAxis dataKey="time" hide />
@@ -625,6 +1020,13 @@ export default function MeetingRoom() {
                                 <div className="text-[10px] text-gray-600">{isAiConnected ? 'Processing frames...' : 'Connecting...'}</div>
                             </div>
                         </div>
+                        {/* DEBUG PREVIEW */}
+                        {debugFrame && (
+                            <div className="mt-2 border border-red-500/50 rounded overflow-hidden">
+                                <p className="text-[9px] text-red-400 uppercase font-bold px-1 bg-red-900/20">Debug View (Sent to AI)</p>
+                                <img src={debugFrame} alt="Debug Sent Frame" className="w-full opacity-80" />
+                            </div>
+                        )}
                     </div>
 
                     {/* Capture Report Button */}

@@ -115,40 +115,98 @@ export default function Lobby() {
     }, [])
 
     useEffect(() => {
-        // AI WebSocket for Preview
-        wsRef.current = new WebSocket('ws://localhost:8000/ws/analyze')
-        let intervalId
+        let mockInterval = null;
+        let ws = null;
 
-        wsRef.current.onopen = () => {
-            console.log('Lobby: Connected to AI backend')
-            setIsAiConnected(true)
-            intervalId = setInterval(() => {
-                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                    wsRef.current.send('ping')
-                }
-            }, 1000)
+        // CASE A: MOCK MODE (Default)
+        if (!useRemoteAi) {
+            console.log("🎭 Lobby: Starting Mock Mode (No Network)");
+            // Simulate connection delay for better UX
+            setTimeout(() => {
+                setIsAiConnected(true); // "Connected" to mock
+            }, 500);
+
+            // Simulate data updates
+            mockInterval = setInterval(() => {
+                const mockData = {
+                    emotion: ['Radość 😃', 'Smutek 😔', 'Złość 😠', 'Neutralny 😐', 'Zaskoczenie 😲'][Math.floor(Math.random() * 5)],
+                    age: Math.floor(Math.random() * (60 - 18 + 1)) + 18,
+                    gender: Math.random() > 0.5 ? 'Mężczyzna' : 'Kobieta'
+                };
+                setAiData(mockData);
+            }, 2000);
         }
 
-        wsRef.current.onmessage = (event) => {
+        // CASE B: REAL AI MODE
+        else if (useRemoteAi && tailscaleIp) {
+            const cleanIp = tailscaleIp.replace(/https?:\/\//, '');
+            const wsUrl = `ws://${cleanIp}:8000/ws/analyze`;
+            console.log("🔗 Lobby: Connecting to Real AI...", wsUrl);
+
             try {
-                const data = JSON.parse(event.data)
-                setAiData(data)
+                ws = new WebSocket(wsUrl);
+                wsRef.current = ws;
+
+                ws.onopen = () => {
+                    console.log("✅ Lobby: Socket Open");
+                    setIsAiConnected(true);
+
+                    // Start Frame Sending Loop
+                    // Note: Lobby intentionally uses a simpler sending logic than MeetingRoom
+                    // to just verify connectivity.
+                    const sendingInterval = setInterval(() => {
+                        if (ws && ws.readyState === WebSocket.OPEN && videoRef.current && videoRef.current.readyState === 4) {
+                            try {
+                                const canvas = document.createElement('canvas');
+                                canvas.width = 320;
+                                canvas.height = 240;
+                                const ctx = canvas.getContext('2d');
+                                ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+                                const frameData = canvas.toDataURL("image/jpeg", 0.7);
+                                ws.send(frameData);
+                            } catch (e) {
+                                // ignore capture errors in lobby
+                            }
+                        }
+                    }, 1000);
+
+                    // Attach interval to socket object to clear it on close (closure trick)
+                    ws.sendingInterval = sendingInterval;
+                };
+
+                ws.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        setAiData(data);
+                    } catch (e) { }
+                };
+
+                ws.onerror = (e) => {
+                    console.log("⚠️ Lobby: Socket Error (Check IP)");
+                    setIsAiConnected(false);
+                };
+
+                ws.onclose = () => {
+                    console.log("Lobby: WS Disconnected");
+                    setIsAiConnected(false);
+                    if (ws.sendingInterval) clearInterval(ws.sendingInterval);
+                };
+
             } catch (e) {
-                // ignore ping responses/errors
+                console.error("Invalid URL");
             }
         }
 
-        wsRef.current.onclose = () => {
-            setIsAiConnected(false)
-        }
-
+        // CLEANUP
         return () => {
-            clearInterval(intervalId)
-            if (wsRef.current) {
-                wsRef.current.close()
+            if (mockInterval) clearInterval(mockInterval);
+            if (ws) {
+                if (ws.sendingInterval) clearInterval(ws.sendingInterval);
+                ws.close();
+                wsRef.current = null;
             }
-        }
-    }, [])
+        };
+    }, [useRemoteAi, tailscaleIp]);
 
     const toggleAudio = () => {
         setIsAudioEnabled(prev => {
@@ -205,8 +263,8 @@ export default function Lobby() {
         navigate(`/meeting/${roomId}`, {
             state: {
                 userName,
-                useRemoteAi,
-                tailscaleIp,
+                isAIEnabled: useRemoteAi,
+                aiIP: tailscaleIp,
                 startMuted: !isAudioEnabled,
                 startVideoOff: !isVideoEnabled
             }
@@ -332,7 +390,7 @@ export default function Lobby() {
                                 <div>
                                     <p className="text-sm text-gray-500 uppercase tracking-wider mb-2">Wykryte Emocje</p>
                                     <div className={`text-3xl font-bold transition-all duration-300 ${getEmotionColor(aiData?.emotion)}`}>
-                                        {aiData ? aiData.emotion.split(' ')[0] : '...'}
+                                        {aiData && aiData.emotion ? aiData.emotion.split(' ')[0] : '...'}
                                     </div>
                                 </div>
 

@@ -347,6 +347,13 @@ export default function Home() {
                             <span>🚀</span> Utwórz nowy pokój
                         </button>
 
+                        <button
+                            onClick={() => navigate('/history')}
+                            className="w-full py-4 text-lg font-bold bg-gray-700/50 border border-gray-600 rounded-xl hover:bg-gray-700 hover:border-gray-500 transition-all text-gray-300 flex items-center justify-center gap-2"
+                        >
+                            <span>📂</span> Historia Spotkań
+                        </button>
+
                         <div className="relative">
                             <div className="absolute inset-0 flex items-center">
                                 <div className="w-full border-t border-gray-700"></div>
