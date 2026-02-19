@@ -247,8 +247,23 @@ export default function MeetingRoom() {
             return () => clearInterval(intervalId);
         }
 
-        const cleanIP = aiIP.replace(/https?:\/\//, '');
-        const wsUrl = `ws://${cleanIP}:8000/ws/analyze`;
+        // Helper to build secure WS URL
+        const buildWsUrl = (input) => {
+            let url = input.trim();
+            // 1. Handle HTTP/HTTPS (Ngrok) -> WSS
+            if (url.startsWith('http://') || url.startsWith('https://')) {
+                const domain = url.replace(/^https?:\/\//, '').replace(/\/$/, '');
+                return `wss://${domain}/ws`;
+            }
+            // 2. Handle WS/WSS -> Append endpoint if needed
+            if (url.startsWith('ws://') || url.startsWith('wss://')) {
+                return url.endsWith('/ws') ? url : `${url.replace(/\/$/, '')}/ws`;
+            }
+            // 3. Raw IP -> WS (Default Port 8000)
+            return `ws://${url}:8000/ws`;
+        };
+
+        const wsUrl = buildWsUrl(aiIP);
 
         let ws = null;
         try {
@@ -260,6 +275,9 @@ export default function MeetingRoom() {
         }
 
         const watchdogInterval = setInterval(() => {
+            // Stop watchdog if we have a critical error
+            if (aiConnectionError) return;
+
             // If AI is enabled, socket connected, and no activity for 3s
             if (ws.readyState === WebSocket.OPEN && (Date.now() - lastActivityRef.current > 3000)) {
                 isProcessingRef.current = false; // Force unlock
@@ -420,41 +438,43 @@ export default function MeetingRoom() {
     };
 
     const leaveRoom = async () => {
-        // 0. End Meeting Recording & Save Summary
+        // 0. End Meeting Recording & Save Summary (Only if data exists)
         if (currentMeetingId || roomId) {
-            const endTime = new Date()
-            const durationSeconds = Math.round((Date.now() - startTimeRef.current) / 1000);
-            const { dominant_emotion, stats } = calculateEmotionStats(rawEmotionsRef.current);
+            const hasData = rawEmotionsRef.current && rawEmotionsRef.current.length > 0;
 
-            // Log for debugging
-            // console.log("Meeting Summary:", { durationSeconds, dominant_emotion, stats });
+            if (hasData) {
+                const endTime = new Date()
+                const durationSeconds = Math.round((Date.now() - startTimeRef.current) / 1000);
+                const { dominant_emotion, stats } = calculateEmotionStats(rawEmotionsRef.current);
 
-            try {
-                // Update meetings table if exists
-                if (currentMeetingId) {
-                    await supabase.from('meetings').update({
-                        ended_at: endTime.toISOString(),
-                    }).eq('id', currentMeetingId);
+                try {
+                    // Update meetings table if exists
+                    if (currentMeetingId) {
+                        await supabase.from('meetings').update({
+                            ended_at: endTime.toISOString(),
+                        }).eq('id', currentMeetingId);
+                    }
+
+                    // Insert into meeting_summaries
+                    const { error } = await supabase.from('meeting_summaries').insert([{
+                        user_id: session?.user?.id,
+                        room_id: roomId, // Storing Room ID string as requested
+                        dominant_emotion: dominant_emotion,
+                        emotion_stats: stats,
+                        duration_seconds: durationSeconds,
+                        created_at: new Date().toISOString()
+                    }]);
+
+                    if (!error) {
+                        // Optional: alert('Raport spotkania został zapisany!'); 
+                        // Removing alert to make exit faster/smoother
+                    } else {
+                        console.error('Error saving summary:', error);
+                    }
+
+                } catch (err) {
+                    console.error("Summary save failed:", err);
                 }
-
-                // Insert into meeting_summaries
-                const { error } = await supabase.from('meeting_summaries').insert([{
-                    user_id: session?.user?.id,
-                    room_id: roomId, // Storing Room ID string as requested
-                    dominant_emotion: dominant_emotion,
-                    emotion_stats: stats,
-                    duration_seconds: durationSeconds,
-                    created_at: new Date().toISOString()
-                }]);
-
-                if (!error) {
-                    alert('Raport spotkania został zapisany!');
-                } else {
-                    console.error('Error saving summary:', error);
-                }
-
-            } catch (err) {
-                console.error("Summary save failed:", err);
             }
         }
 
@@ -477,7 +497,15 @@ export default function MeetingRoom() {
             peerInstance.current = null;
         }
 
-        // 4. Navigate home
+        // 4. Close WebSocket if open
+        if (aiSocketRef.current) {
+            try {
+                aiSocketRef.current.close();
+            } catch (e) { /* ignore */ }
+            aiSocketRef.current = null;
+        }
+
+        // 5. Navigate home
         navigate('/');
     }
 

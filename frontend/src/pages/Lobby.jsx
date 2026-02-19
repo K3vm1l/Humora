@@ -444,7 +444,7 @@ export default function Lobby() {
                                         type="text"
                                         value={tailscaleIp}
                                         onChange={(e) => setTailscaleIp(e.target.value)}
-                                        placeholder="IP kolegi, np. 100.x.x.x"
+                                        placeholder="IP kolegi (100.x.x.x) lub link Ngrok (https://...)"
                                         className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-green-500 transition-all font-mono"
                                     />
                                 )}
