@@ -139,8 +139,25 @@ export default function Lobby() {
 
         // CASE B: REAL AI MODE
         else if (useRemoteAi && tailscaleIp) {
-            const cleanIp = tailscaleIp.replace(/https?:\/\//, '');
-            const wsUrl = `ws://${cleanIp}:8000/ws/analyze`;
+            const buildWsUrl = (input) => {
+                if (!input) return '';
+                const cleanInput = input.trim().replace(/\/$/, '');
+
+                // If it's Cloudflare or Ngrok
+                if (cleanInput.includes('trycloudflare.com') || cleanInput.includes('ngrok-free.dev') || cleanInput.startsWith('http')) {
+                    const domain = cleanInput.replace(/^https?:\/\//, '').split(':')[0];
+                    return `wss://${domain}/ws`;
+                }
+
+                // If it's a raw IP (Tailscale)
+                if (!cleanInput.startsWith('ws')) {
+                    return `ws://${cleanInput}:8000/ws`;
+                }
+
+                return cleanInput;
+            };
+
+            const wsUrl = buildWsUrl(tailscaleIp);
             console.log("🔗 Lobby: Connecting to Real AI...", wsUrl);
 
             try {

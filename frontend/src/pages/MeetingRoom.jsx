@@ -250,18 +250,21 @@ export default function MeetingRoom() {
 
         // Helper to build secure WS URL
         const buildWsUrl = (input) => {
-            const cleanInput = input.trim();
-            // Support for Cloudflare and Ngrok
+            if (!input) return '';
+            const cleanInput = input.trim().replace(/\/$/, '');
+
+            // If it's Cloudflare or Ngrok
             if (cleanInput.includes('trycloudflare.com') || cleanInput.includes('ngrok-free.dev') || cleanInput.startsWith('http')) {
-                // Force WSS and remove any ports, append /ws
-                const domain = cleanInput.replace(/^https?:\/\//, '').split(':')[0].replace(/\/$/, '');
+                const domain = cleanInput.replace(/^https?:\/\//, '').split(':')[0];
                 return `wss://${domain}/ws`;
             }
-            if (cleanInput.startsWith('ws://') || cleanInput.startsWith('wss://')) {
-                return cleanInput.endsWith('/ws') ? cleanInput : `${cleanInput.replace(/\/$/, '')}/ws`;
+
+            // If it's a raw IP (Tailscale)
+            if (!cleanInput.startsWith('ws')) {
+                return `ws://${cleanInput}:8000/ws`;
             }
-            // Fallback for raw IP (Tailscale)
-            return `ws://${cleanInput}:8000/ws`;
+
+            return cleanInput;
         };
 
         const wsUrl = buildWsUrl(aiIP);
