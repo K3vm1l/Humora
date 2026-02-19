@@ -251,13 +251,14 @@ export default function MeetingRoom() {
         // Helper to build secure WS URL
         const buildWsUrl = (input) => {
             const cleanInput = input.trim();
-            if (cleanInput.includes('ngrok-free.dev') || cleanInput.startsWith('http')) {
+            // Support for Cloudflare and Ngrok
+            if (cleanInput.includes('trycloudflare.com') || cleanInput.includes('ngrok-free.dev') || cleanInput.startsWith('http')) {
                 // Force WSS and remove any ports, append /ws
                 const domain = cleanInput.replace(/^https?:\/\//, '').split(':')[0].replace(/\/$/, '');
                 return `wss://${domain}/ws`;
             }
             if (cleanInput.startsWith('ws://') || cleanInput.startsWith('wss://')) {
-                return cleanInput;
+                return cleanInput.endsWith('/ws') ? cleanInput : `${cleanInput.replace(/\/$/, '')}/ws`;
             }
             // Fallback for raw IP (Tailscale)
             return `ws://${cleanInput}:8000/ws`;
