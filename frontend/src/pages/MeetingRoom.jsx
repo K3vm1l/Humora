@@ -44,6 +44,7 @@ export default function MeetingRoom() {
     const lastActivityRef = useRef(Date.now()) // Watchdog Ref
     const [aiConnectionError, setAiConnectionError] = useState(null) // New Error State
     const startTimeRef = useRef(Date.now()) // Track meeting start time
+    const rawEmotionsRef = useRef([]) // Fix: Add missing ref
 
     // Robust cleanup function
 
@@ -249,21 +250,23 @@ export default function MeetingRoom() {
 
         // Helper to build secure WS URL
         const buildWsUrl = (input) => {
-            let url = input.trim();
-            // 1. Handle HTTP/HTTPS (Ngrok) -> WSS
-            if (url.startsWith('http://') || url.startsWith('https://')) {
-                const domain = url.replace(/^https?:\/\//, '').replace(/\/$/, '');
+            const cleanInput = input.trim();
+            if (cleanInput.includes('ngrok-free.dev') || cleanInput.startsWith('http')) {
+                // Force WSS and remove any ports, append /ws
+                const domain = cleanInput.replace(/^https?:\/\//, '').split(':')[0].replace(/\/$/, '');
                 return `wss://${domain}/ws`;
             }
-            // 2. Handle WS/WSS -> Append endpoint if needed
-            if (url.startsWith('ws://') || url.startsWith('wss://')) {
-                return url.endsWith('/ws') ? url : `${url.replace(/\/$/, '')}/ws`;
+            if (cleanInput.startsWith('ws://') || cleanInput.startsWith('wss://')) {
+                return cleanInput;
             }
-            // 3. Raw IP -> WS (Default Port 8000)
-            return `ws://${url}:8000/ws`;
+            // Fallback for raw IP (Tailscale)
+            return `ws://${cleanInput}:8000/ws`;
         };
 
         const wsUrl = buildWsUrl(aiIP);
+
+        // Validation Check
+        if (!wsUrl || wsUrl.includes('undefined')) return;
 
         let ws = null;
         try {
@@ -440,7 +443,7 @@ export default function MeetingRoom() {
     const leaveRoom = async () => {
         // 0. End Meeting Recording & Save Summary (Only if data exists)
         if (currentMeetingId || roomId) {
-            const hasData = rawEmotionsRef.current && rawEmotionsRef.current.length > 0;
+            const hasData = rawEmotionsRef.current?.length > 0;
 
             if (hasData) {
                 const endTime = new Date()
