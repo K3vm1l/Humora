@@ -42,7 +42,7 @@ export default function MeetingRoom() {
     const roomChannelRef = useRef(null)
     const isSocketReadyRef = useRef(false) // Safe flag for startup delay
     const lastActivityRef = useRef(Date.now()) // Watchdog Ref
-    const rawEmotionsRef = useRef([]) // Store ALL emotions for summary
+    const [aiConnectionError, setAiConnectionError] = useState(null) // New Error State
     const startTimeRef = useRef(Date.now()) // Track meeting start time
 
     // Robust cleanup function
@@ -247,11 +247,17 @@ export default function MeetingRoom() {
             return () => clearInterval(intervalId);
         }
 
-        // --- AI MODE (Strict Mode Safe) ---
         const cleanIP = aiIP.replace(/https?:\/\//, '');
         const wsUrl = `ws://${cleanIP}:8000/ws/analyze`;
 
-        const ws = new WebSocket(wsUrl);
+        let ws = null;
+        try {
+            ws = new WebSocket(wsUrl);
+        } catch (err) {
+            console.error("WebSocket Init Error:", err);
+            setAiConnectionError("Błąd połączenia z AI: " + err.message);
+            return; // Exit effect if WS fails immediately
+        }
 
         const watchdogInterval = setInterval(() => {
             // If AI is enabled, socket connected, and no activity for 3s
@@ -355,7 +361,11 @@ export default function MeetingRoom() {
             setIsAiConnected(false);
         };
 
-        ws.onerror = (e) => console.error("🔥 AI Error", e);
+        ws.onerror = (e) => {
+            console.error("🔥 AI Error", e);
+            setAiConnectionError("Błąd połączenia (Mixed Content/SSL)");
+            setIsAiConnected(false);
+        };
 
         return () => {
             if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
@@ -728,6 +738,12 @@ export default function MeetingRoom() {
 
                 {/* Video Grid */}
                 <div className="flex-1 flex flex-col items-center justify-center gap-6 w-full max-w-6xl mx-auto">
+                    {/* AI Error Banner */}
+                    {aiConnectionError && (
+                        <div className="bg-red-900/80 border border-red-500 text-red-200 px-4 py-2 rounded-lg text-sm flex items-center gap-2 animate-pulse">
+                            <span>⚠️</span> {aiConnectionError}
+                        </div>
+                    )}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
                         {/* Local Video */}
                         <div className="relative group overflow-hidden rounded-2xl border-2 border-gray-800 shadow-2xl bg-gray-900 aspect-video">
