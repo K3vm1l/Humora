@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import Peer from 'peerjs'
-import { LineChart, Line, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
+import { LineChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import supabase from '../supabaseClient'
 
 export default function MeetingRoom() {
@@ -29,9 +29,9 @@ export default function MeetingRoom() {
     const chatScrollRef = useRef(null)
 
     const [aiData, setAiData] = useState(null)
-    const [history, setHistory] = useState([])
+    const [emotionHistory, setEmotionHistory] = useState([])
     const [isAiConnected, setIsAiConnected] = useState(false)
-    const [debugFrame, setDebugFrame] = useState(null) // DEBUG: Visualise sent frame
+
 
     const videoRef = useRef(null)
     const remoteVideoRef = useRef(null)
@@ -216,7 +216,7 @@ export default function MeetingRoom() {
 
         if (!isAIEnabled || !aiIP) {
             // --- MOCK MODE ---
-            console.log("🎲 AI Disabled/Missing IP. Starting Mock Data.");
+
             intervalId = setInterval(() => {
                 const mockData = {
                     emotion: ['Radość 😃', 'Smutek 😔', 'Złość 😠', 'Neutralny 😐', 'Zaskoczenie 😲'][Math.floor(Math.random() * 5)],
@@ -226,16 +226,18 @@ export default function MeetingRoom() {
                 setAiData(mockData);
 
                 if (mockData.emotion) {
-                    setHistory(prev => {
-                        const newScore = getEmotionScore(mockData.emotion);
-                        if (typeof newScore !== 'number' || isNaN(newScore)) return prev;
-                        const newPoint = {
-                            time: new Date().toLocaleTimeString('pl-PL', { hour12: false, hour: "numeric", minute: "numeric", second: "numeric" }),
-                            score: newScore,
-                            emotion: mockData.emotion.split(' ')[0]
-                        };
-                        return [...prev, newPoint].slice(-30);
-                    });
+                    if (mockData.emotion) {
+                        setEmotionHistory(prev => {
+                            const newScore = getEmotionScore(mockData.emotion);
+                            if (typeof newScore !== 'number' || isNaN(newScore)) return prev;
+                            const newPoint = {
+                                time: new Date().toLocaleTimeString('pl-PL', { hour12: false, hour: "numeric", minute: "numeric", second: "numeric" }),
+                                value: newScore,
+                                emotion: mockData.emotion.split(' ')[0]
+                            };
+                            return [...prev, newPoint].slice(-30);
+                        });
+                    }
                 }
             }, 2000);
 
@@ -245,15 +247,12 @@ export default function MeetingRoom() {
         // --- AI MODE (Strict Mode Safe) ---
         const cleanIP = aiIP.replace(/https?:\/\//, '');
         const wsUrl = `ws://${cleanIP}:8000/ws/analyze`;
-        console.log("🔗 Connecting to AI:", wsUrl);
 
         const ws = new WebSocket(wsUrl);
 
-        // --- WATCHDOG SYSTEM (Inside Effect) ---
         const watchdogInterval = setInterval(() => {
             // If AI is enabled, socket connected, and no activity for 3s
             if (ws.readyState === WebSocket.OPEN && (Date.now() - lastActivityRef.current > 3000)) {
-                console.warn("🐶 Watchdog: No AI response for 3s. Kickstarting loop...");
                 isProcessingRef.current = false; // Force unlock
                 sendFrame(); // Still inside closure, so safe to call
             }
@@ -265,7 +264,6 @@ export default function MeetingRoom() {
             const video = videoRef.current;
             // 2 = HAVE_CURRENT_DATA (Enough for a frame)
             if (!video || video.readyState < 2 || video.videoWidth === 0) {
-                console.log("⏳ Video not ready yet (or width 0), retrying...");
                 setTimeout(sendFrame, 500); // Retry in 500ms
                 return;
             }
@@ -286,9 +284,6 @@ export default function MeetingRoom() {
                     ctx.drawImage(video, 0, 0, w, h);
 
                     const frameData = canvas.toDataURL("image/jpeg", 0.9);
-                    setDebugFrame(frameData); // DEBUG: Show what we send
-                    const sizeKB = Math.round(frameData.length / 1024);
-                    console.log('💎 Sending HD Frame. Size:', sizeKB, 'KB');
                     ws.send(frameData);
 
                 } catch (e) {
@@ -299,7 +294,6 @@ export default function MeetingRoom() {
         };
 
         ws.onopen = () => {
-            console.log("✅ AI Connected. Starting Loop...");
             aiSocketRef.current = ws;
             isSocketReadyRef.current = true;
             setIsAiConnected(true);
@@ -310,7 +304,7 @@ export default function MeetingRoom() {
         };
 
         ws.onmessage = (event) => {
-            console.log('📢 EMERGENCY LOG: Something arrived!', event.data);
+
             try {
                 isProcessingRef.current = false; // Unlock
                 lastActivityRef.current = Date.now(); // Update Watchdog
@@ -322,12 +316,12 @@ export default function MeetingRoom() {
                 if (data.emotion || data.age) {
                     setAiData(data);
                     if (data.emotion) {
-                        setHistory(prev => {
+                        setEmotionHistory(prev => {
                             const newScore = getEmotionScore(data.emotion);
                             if (typeof newScore !== 'number' || isNaN(newScore)) return prev;
                             const newPoint = {
                                 time: new Date().toLocaleTimeString('pl-PL', { hour12: false, hour: "numeric", minute: "numeric", second: "numeric" }),
-                                score: newScore,
+                                value: newScore,
                                 emotion: data.emotion.split(' ')[0]
                             };
                             return [...prev, newPoint].slice(-30);
@@ -354,186 +348,12 @@ export default function MeetingRoom() {
         };
 
         ws.onclose = () => {
-            console.log("❌ AI Disconnected");
             setIsAiConnected(false);
         };
 
         ws.onerror = (e) => console.error("🔥 AI Error", e);
 
-        // Cleanup
-        /*
-        let socket = null;
-        let intervalId = null;
-
-        if (isAIEnabled && aiIP) {
-            // --- AI MODE ---
-            const cleanIP = aiIP.replace(/https?:\/\//, '');
-            const WS_URL = `ws://${cleanIP}:8000/ws/analyze`;
-            console.log("🔗 Connecting to AI:", WS_URL);
-
-            socket = new WebSocket(WS_URL);
-
-            socket.onopen = () => {
-                console.log("✅ AI Connected");
-                aiSocketRef.current = socket;
-                setIsAiConnected(true);
-
-                // Send initial PING
-                try {
-                    socket.send("PING");
-                } catch (e) {
-                    console.error("Failed to send initial PING:", e);
-                }
-
-                // Startup Delay
-                const startSending = () => {
-                    isSocketReadyRef.current = true;
-                    console.log("🚀 AI: Ready to send frames");
-                    sendNextFrame(); // Kickstart the loop
-                };
-                setTimeout(startSending, 1000);
-            };
-
-            // 3. THE "PING-PONG" SENDING FUNCTION
-            const sendNextFrame = () => {
-                if (
-                    aiSocketRef.current &&
-                    aiSocketRef.current.readyState === WebSocket.OPEN &&
-                    isAIEnabled &&
-                    isSocketReadyRef.current
-                ) {
-                    if (!isProcessingRef.current && videoRef.current && videoRef.current.readyState === 4) {
-                        try {
-                            isProcessingRef.current = true; // Lock
-
-                            // Frame Logic (Low Res 320x240)
-                            const video = videoRef.current;
-                            // aspect ratio scaling or fixed, 320x240 is safe
-                            const w = 320;
-                            const h = 240;
-
-                            const canvas = document.createElement('canvas');
-                            canvas.width = w;
-                            canvas.height = h;
-                            const ctx = canvas.getContext('2d');
-                            ctx.drawImage(video, 0, 0, w, h);
-
-                            // Compress
-                            const frameData = canvas.toDataURL('image/jpeg', 0.5);
-                            aiSocketRef.current.send(frameData);
-
-                        } catch (err) {
-                            console.error("Frame capture error:", err);
-                            isProcessingRef.current = false;
-                            // Retry after short delay
-                            setTimeout(sendNextFrame, 1000);
-                        }
-                    } else {
-                        // Video not ready or processing, check again soon
-                        setTimeout(sendNextFrame, 100);
-                    }
-                }
-            };
-
-            socket.onmessage = (event) => {
-                try {
-                    isProcessingRef.current = false; // Unlock
-                    const text = event.data;
-
-                    if (text === "PONG") return;
-
-                    const data = JSON.parse(text);
-
-                    // CASE A: Processing
-                    if (data.status === "processing") {
-                        // console.log("🔍 AI Processing...");
-                    }
-                    // CASE B: Valid Data
-                    else if (data.emotion || data.age) {
-                        setAiData(data);
-                        // Update History Logic
-                        if (data.emotion) {
-                            setHistory(prev => {
-                                const newScore = getEmotionScore(data.emotion);
-                                if (typeof newScore !== 'number' || isNaN(newScore)) return prev;
-
-                                const newPoint = {
-                                    time: new Date().toLocaleTimeString('pl-PL', { hour12: false, hour: "numeric", minute: "numeric", second: "numeric" }),
-                                    score: newScore,
-                                    emotion: data.emotion.split(' ')[0]
-                                };
-                                return [...prev, newPoint].slice(-30);
-                            });
-                        }
-                    }
-
-                    // CRITICAL: TRIGGER NEXT FRAME
-                    setTimeout(() => {
-                        sendNextFrame();
-                    }, 50); // 50ms delay
-
-                } catch (e) {
-                    console.error("Parse error", e);
-                    isProcessingRef.current = false;
-                    setTimeout(sendNextFrame, 1000); // Retry logic
-                }
-            };
-
-            socket.onclose = (event) => {
-                console.log("❌ AI: Disconnected:", event.code, event.reason);
-                setIsAiConnected(false);
-                aiSocketRef.current = null;
-            };
-
-            socket.onerror = (error) => {
-                console.error("🔥 AI: Connection Error", error);
-            };
-
-        } else {
-            // --- MOCK MODE ---
-            console.log("🎲 AI Disabled/Missing IP. Starting Mock Data.");
-            intervalId = setInterval(() => {
-                const mockData = {
-                    emotion: ['Radość 😃', 'Smutek 😔', 'Złość 😠', 'Neutralny 😐', 'Zaskoczenie 😲'][Math.floor(Math.random() * 5)],
-                    age: Math.floor(Math.random() * (60 - 18 + 1)) + 18,
-                    gender: Math.random() > 0.5 ? 'Mężczyzna' : 'Kobieta'
-                };
-                setAiData(mockData);
-
-                // Update History Logic for Mock
-                if (mockData.emotion) {
-                    setHistory(prev => {
-                        const newScore = getEmotionScore(mockData.emotion);
-                        if (typeof newScore !== 'number' || isNaN(newScore)) return prev;
-
-                        const newPoint = {
-                            time: new Date().toLocaleTimeString('pl-PL', { hour12: false, hour: "numeric", minute: "numeric", second: "numeric" }),
-                            score: newScore,
-                            emotion: mockData.emotion.split(' ')[0]
-                        };
-                        return [...prev, newPoint].slice(-30);
-                    });
-                }
-            }, 2000);
-        }
-
-        // --- CLEANUP ---
         return () => {
-            if (socket) {
-                if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
-                    socket.close();
-                }
-            }
-            if (intervalId) clearInterval(intervalId);
-            if (aiSocketRef.current === socket) {
-                aiSocketRef.current = null;
-                isSocketReadyRef.current = false;
-            }
-        };
-        */
-
-        return () => {
-            console.log("🧹 Cleaning up WebSocket");
             if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
                 ws.close();
             }
@@ -971,15 +791,15 @@ export default function MeetingRoom() {
                         <label className="text-xs font-bold text-gray-500 uppercase tracking-widest block">Trend Emocjonalny</label>
                         <div className="bg-gray-800/30 rounded-xl p-2 border border-gray-700/30 w-full h-64 min-h-[250px]">
                             <ResponsiveContainer width="100%" height="100%">
-                                <LineChart data={history}>
-                                    <XAxis dataKey="time" hide />
+                                <LineChart data={emotionHistory || []}>
+                                    <YAxis domain={[0, 100]} hide={true} />
                                     <Tooltip
                                         contentStyle={{ backgroundColor: '#111827', borderColor: '#374151', fontSize: '12px' }}
                                         itemStyle={{ color: '#e5e7eb' }}
                                     />
                                     <Line
                                         type="monotone"
-                                        dataKey="score"
+                                        dataKey="value"
                                         stroke={aiData && aiData.emotion ? getEmotionHexColor(aiData.emotion) : '#8b5cf6'}
                                         strokeWidth={3}
                                         dot={false}
@@ -1020,13 +840,6 @@ export default function MeetingRoom() {
                                 <div className="text-[10px] text-gray-600">{isAiConnected ? 'Processing frames...' : 'Connecting...'}</div>
                             </div>
                         </div>
-                        {/* DEBUG PREVIEW */}
-                        {debugFrame && (
-                            <div className="mt-2 border border-red-500/50 rounded overflow-hidden">
-                                <p className="text-[9px] text-red-400 uppercase font-bold px-1 bg-red-900/20">Debug View (Sent to AI)</p>
-                                <img src={debugFrame} alt="Debug Sent Frame" className="w-full opacity-80" />
-                            </div>
-                        )}
                     </div>
 
                     {/* Capture Report Button */}
