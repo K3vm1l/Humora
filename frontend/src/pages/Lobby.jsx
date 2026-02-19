@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import supabase from '../supabaseClient'
+import Background from '../components/Background'
 
 export default function Lobby() {
     const { roomId } = useParams()
@@ -298,7 +299,8 @@ export default function Lobby() {
     }
 
     return (
-        <div className="min-h-screen bg-gray-950 flex flex-col items-center justify-center p-6 text-white overflow-hidden relative">
+        <div className="min-h-screen flex flex-col items-center justify-center p-6 text-white overflow-hidden relative">
+            <Background />
             <button
                 onClick={handleGoBack}
                 className="absolute top-6 left-6 flex items-center gap-2 text-gray-400 hover:text-white transition-colors font-medium z-50 cursor-pointer"
@@ -447,7 +449,7 @@ export default function Lobby() {
                             {/* Connection Settings */}
                             <div className="space-y-3 bg-gray-800/30 p-4 rounded-xl border border-white/5">
                                 <div className="flex items-center justify-between">
-                                    <label className="text-sm font-medium text-gray-300">Połącz z zewnętrznym AI (Tailscale)</label>
+                                    <label className="text-sm font-medium text-gray-300">Połącz z zewnętrznym serwerem AI</label>
                                     <button
                                         onClick={() => setUseRemoteAi(!useRemoteAi)}
                                         className={`w-12 h-6 rounded-full p-1 transition-colors duration-300 ${useRemoteAi ? 'bg-green-500' : 'bg-gray-600'}`}
@@ -461,7 +463,7 @@ export default function Lobby() {
                                         type="text"
                                         value={tailscaleIp}
                                         onChange={(e) => setTailscaleIp(e.target.value)}
-                                        placeholder="IP kolegi (100.x.x.x) lub link Ngrok (https://...)"
+                                        placeholder="Wklej adres IP lub link (Cloudflare/Ngrok)"
                                         className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-green-500 transition-all font-mono"
                                     />
                                 )}

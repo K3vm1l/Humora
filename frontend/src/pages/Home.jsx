@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import Background from '../components/Background';
 import supabase from '../supabaseClient';
 
 const ChatWidget = ({ friend, session, index, onClose }) => {
@@ -328,8 +329,9 @@ export default function Home() {
     };
 
     return (
-        <div className="min-h-screen bg-gray-900 text-white p-8">
-            <div className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-8 h-[calc(100vh-4rem)]">
+        <div className="min-h-screen text-white p-8 relative overflow-hidden">
+            <Background />
+            <div className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-8 h-[calc(100vh-4rem)] z-10 relative">
                 {/* Left Column: Actions */}
                 <div className="space-y-8 flex flex-col justify-center">
                     <div className="bg-gray-800 p-8 rounded-2xl shadow-lg border border-gray-700 text-center md:text-left">
