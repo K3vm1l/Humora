@@ -42,6 +42,8 @@ export default function MeetingRoom() {
     const roomChannelRef = useRef(null)
     const isSocketReadyRef = useRef(false) // Safe flag for startup delay
     const lastActivityRef = useRef(Date.now()) // Watchdog Ref
+    const rawEmotionsRef = useRef([]) // Store ALL emotions for summary
+    const startTimeRef = useRef(Date.now()) // Track meeting start time
 
     // Robust cleanup function
 
@@ -235,6 +237,7 @@ export default function MeetingRoom() {
                                 value: newScore,
                                 emotion: mockData.emotion.split(' ')[0]
                             };
+                            rawEmotionsRef.current.push(mockData.emotion); // Track raw data
                             return [...prev, newPoint].slice(-30);
                         });
                     }
@@ -324,6 +327,7 @@ export default function MeetingRoom() {
                                 value: newScore,
                                 emotion: data.emotion.split(' ')[0]
                             };
+                            if (data.emotion) rawEmotionsRef.current.push(data.emotion); // Track raw data
                             return [...prev, newPoint].slice(-30);
                         });
                     }
@@ -380,13 +384,68 @@ export default function MeetingRoom() {
         })
     }
 
+    const calculateEmotionStats = (emotions) => {
+        if (!emotions || emotions.length === 0) return { dominant_emotion: 'Neutralny', stats: {} };
+
+        const counts = {};
+        emotions.forEach(e => {
+            const label = e.split(' ')[0]; // Take first word "Szczęście" from "Szczęście 😃"
+            counts[label] = (counts[label] || 0) + 1;
+        });
+
+        const total = emotions.length;
+        const stats = {};
+        let dominant = 'Neutralny';
+        let maxCount = 0;
+
+        for (const [key, count] of Object.entries(counts)) {
+            stats[key] = Math.round((count / total) * 100);
+            if (count > maxCount) {
+                maxCount = count;
+                dominant = key;
+            }
+        }
+
+        return { dominant_emotion: dominant, stats };
+    };
+
     const leaveRoom = async () => {
-        // 0. End Meeting Recording
-        if (currentMeetingId) {
+        // 0. End Meeting Recording & Save Summary
+        if (currentMeetingId || roomId) {
             const endTime = new Date()
-            await supabase.from('meetings').update({
-                ended_at: endTime.toISOString(),
-            }).eq('id', currentMeetingId)
+            const durationSeconds = Math.round((Date.now() - startTimeRef.current) / 1000);
+            const { dominant_emotion, stats } = calculateEmotionStats(rawEmotionsRef.current);
+
+            // Log for debugging
+            // console.log("Meeting Summary:", { durationSeconds, dominant_emotion, stats });
+
+            try {
+                // Update meetings table if exists
+                if (currentMeetingId) {
+                    await supabase.from('meetings').update({
+                        ended_at: endTime.toISOString(),
+                    }).eq('id', currentMeetingId);
+                }
+
+                // Insert into meeting_summaries
+                const { error } = await supabase.from('meeting_summaries').insert([{
+                    user_id: session?.user?.id,
+                    room_id: roomId, // Storing Room ID string as requested
+                    dominant_emotion: dominant_emotion,
+                    emotion_stats: stats,
+                    duration_seconds: durationSeconds,
+                    created_at: new Date().toISOString()
+                }]);
+
+                if (!error) {
+                    alert('Raport spotkania został zapisany!');
+                } else {
+                    console.error('Error saving summary:', error);
+                }
+
+            } catch (err) {
+                console.error("Summary save failed:", err);
+            }
         }
 
         // 1. Forcefully detach streams from the HTML video elements

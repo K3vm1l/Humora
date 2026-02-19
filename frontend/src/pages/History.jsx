@@ -17,16 +17,62 @@ export default function History() {
 
     const fetchHistory = async (userId) => {
         try {
-            const { data, error } = await supabase
+            setLoading(true);
+
+            // 1. Fetch Meetings (Core Data)
+            const { data: meetingsData, error: meetingsError } = await supabase
                 .from('meetings')
                 .select('*, captures(*)')
                 .eq('host_id', userId)
                 .order('started_at', { ascending: false });
 
-            if (error) throw error;
-            setMeetings(data || []);
+            if (meetingsError) throw meetingsError;
+            console.log("✅ Fetched Meetings:", meetingsData?.length);
+
+            // 2. Fetch Summaries separately (to avoid inner join issues)
+            const { data: summariesData, error: summariesError } = await supabase
+                .from('meeting_summaries')
+                .select('*')
+                .eq('user_id', userId);
+
+            if (summariesError) {
+                console.error("⚠️ Error fetching summaries:", summariesError);
+            } else {
+                console.log("✅ Fetched Summaries:", summariesData?.length);
+            }
+
+            // 3. Manual Merge
+            const mergedData = meetingsData.map(meeting => {
+                let match = null;
+
+                if (summariesData) {
+                    // Strategy A: Match by Room ID (if meetings table has it)
+                    if (meeting.room_id) {
+                        match = summariesData.find(s => s.room_id === meeting.room_id);
+                    }
+
+                    // Strategy B: Match by Time (User ID already matches)
+                    // Summary created_at should be very close to meeting ended_at
+                    if (!match && meeting.ended_at) {
+                        const meetingEnd = new Date(meeting.ended_at).getTime();
+                        match = summariesData.find(s => {
+                            const summaryTime = new Date(s.created_at).getTime();
+                            return Math.abs(summaryTime - meetingEnd) < 10000; // 10 second window
+                        });
+                    }
+                }
+
+                return {
+                    ...meeting,
+                    meeting_summaries: match ? [match] : [] // Attach as array to match existing UI code
+                };
+            });
+
+            console.log("🔗 Merged History Data:", mergedData);
+            setMeetings(mergedData || []);
+
         } catch (error) {
-            console.error('Error fetching history:', error);
+            console.error('❌ Error fetching history:', error);
         } finally {
             setLoading(false);
         }
@@ -74,6 +120,22 @@ export default function History() {
             ? Math.round((new Date(meeting.ended_at) - new Date(meeting.started_at)) / 1000 / 60) + ' min'
             : 'N/A';
 
+        const summaryData = meeting.meeting_summaries?.[0];
+        let aiSection = '';
+
+        if (summaryData) {
+            const statsText = summaryData.emotion_stats
+                ? Object.entries(summaryData.emotion_stats).map(([k, v]) => `${k} (${v}%)`).join(', ')
+                : 'Brak danych';
+
+            aiSection = `
+--- Analiza Emocji AI ---
+Czas trwania: ${summaryData.duration_seconds} sek
+Dominująca emocja: ${summaryData.dominant_emotion}
+Szczegóły: ${statsText}
+            `;
+        }
+
         const summary = `
 RAPORT SPOTKANIA HUMORA
 -----------------------
@@ -83,6 +145,7 @@ Czas trwania: ${duration}
 Liczba zrzutów: ${meeting.captures?.length || 0}
 -----------------------
 ID Spotkania: ${meeting.id}
+${aiSection}
         `.trim();
 
         // Download Summary Text
@@ -139,15 +202,29 @@ ID Spotkania: ${meeting.id}
                                         <th className="px-6 py-4 font-semibold tracking-wider">Data</th>
                                         <th className="px-6 py-4 font-semibold tracking-wider">Uczestnik</th>
                                         <th className="px-6 py-4 font-semibold tracking-wider">Czas Trwania</th>
+                                        <th className="px-6 py-4 font-semibold tracking-wider">Analiza AI</th>
                                         <th className="px-6 py-4 font-semibold tracking-wider">Raporty</th>
                                         <th className="px-6 py-4 font-semibold tracking-wider text-right">Akcje</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-gray-700">
                                     {meetings.map((meeting) => {
-                                        const duration = meeting.ended_at
-                                            ? Math.round((new Date(meeting.ended_at) - new Date(meeting.started_at)) / 1000 / 60)
-                                            : null;
+                                        // Calculate duration helper
+                                        const getDuration = () => {
+                                            if (meeting.meeting_summaries && meeting.meeting_summaries.length > 0) {
+                                                const seconds = meeting.meeting_summaries[0].duration_seconds;
+                                                const mins = Math.floor(seconds / 60);
+                                                const secs = seconds % 60;
+                                                return `${mins}:${secs.toString().padStart(2, '0')}`;
+                                            }
+                                            if (meeting.ended_at) {
+                                                const diff = Math.round((new Date(meeting.ended_at) - new Date(meeting.started_at)) / 1000 / 60);
+                                                return `${diff} min`;
+                                            }
+                                            return 'Trwa...';
+                                        };
+
+                                        const summary = meeting.meeting_summaries?.[0];
 
                                         return (
                                             <tr key={meeting.id} className="hover:bg-gray-700/30 transition-colors">
@@ -158,7 +235,33 @@ ID Spotkania: ${meeting.id}
                                                     {meeting.participant_name || 'Nieznany'}
                                                 </td>
                                                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-400 font-mono">
-                                                    {duration !== null ? `${duration} min` : 'Trwa...'}
+                                                    {getDuration()}
+                                                </td>
+                                                <td className="px-6 py-4 whitespace-nowrap">
+                                                    {summary ? (
+                                                        <div className="group relative inline-block cursor-help">
+                                                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${summary.dominant_emotion === 'Radość' ? 'bg-green-900/30 text-green-400 border-green-500/30' :
+                                                                summary.dominant_emotion === 'Złość' ? 'bg-red-900/30 text-red-400 border-red-500/30' :
+                                                                    summary.dominant_emotion === 'Smutek' ? 'bg-blue-900/30 text-blue-400 border-blue-500/30' :
+                                                                        'bg-gray-700 text-gray-300 border-gray-600'
+                                                                }`}>
+                                                                {summary.dominant_emotion}
+                                                            </span>
+
+                                                            {/* Tooltip */}
+                                                            <div className="invisible group-hover:visible absolute z-10 bottom-full left-1/2 transform -translate-x-1/2 mb-2 w-48 bg-gray-900 border border-gray-700 rounded-lg shadow-xl p-3 text-xs">
+                                                                {summary.emotion_stats && Object.entries(summary.emotion_stats).map(([emotion, pct]) => (
+                                                                    <div key={emotion} className="flex justify-between py-0.5 text-gray-300">
+                                                                        <span>{emotion}:</span>
+                                                                        <span className="font-mono text-white">{pct}%</span>
+                                                                    </div>
+                                                                ))}
+                                                                <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <span className="text-xs text-gray-600">-</span>
+                                                    )}
                                                 </td>
                                                 <td className="px-6 py-4">
                                                     <div className="flex -space-x-2 overflow-hidden">
