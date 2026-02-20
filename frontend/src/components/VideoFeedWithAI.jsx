@@ -20,39 +20,27 @@ const VideoFeedWithAI = ({
     const [aiConnectionError, setAiConnectionError] = useState(null);
 
     // AI Refs
-    const aiSocketRef = useRef(null);
+    const socketRef = useRef(null);
+    const watchdogRef = useRef(null);
     const isProcessingRef = useRef(false);
     const lastActivityRef = useRef(Date.now());
-    const rawEmotionsRef = useRef([]);
 
-    // 1. Attach Stream to Video
+    // Store latest props in ref to access them inside the interval without dependencies
+    const propsRef = useRef({ isAIEnabled, aiIP, userName, stream, isLocal });
+
     useEffect(() => {
-        if (videoRef.current) {
+        propsRef.current = { isAIEnabled, aiIP, userName, stream, isLocal };
+    }, [isAIEnabled, aiIP, userName, stream, isLocal]);
+
+    // 1. Attach Stream to Video (Run ONLY when stream changes)
+    useEffect(() => {
+        if (videoRef.current && stream) {
             videoRef.current.srcObject = stream;
         }
     }, [stream]);
 
-    // 2. AI Logic (WebSocket & Watchdog)
+    // 2. AI Logic (WebSocket & Watchdog in Strict Isolation)
     useEffect(() => {
-        // If disabled, cleanup and return
-        if (!isAIEnabled) {
-            if (aiSocketRef.current) {
-                aiSocketRef.current.close();
-                aiSocketRef.current = null;
-            }
-            return;
-        }
-
-        // Prevent double initialization
-        if (aiSocketRef.current) return;
-
-        let intervalId = null;
-        let watchdogInterval = null;
-        let ws = null;
-
-        // Reset state on new connection attempt
-        setAiConnectionError(null);
-
         // Helper to get score
         const getEmotionScore = (emotionString) => {
             if (!emotionString || typeof emotionString !== 'string') return 0;
@@ -65,18 +53,24 @@ const VideoFeedWithAI = ({
             return 0;
         };
 
-        const sendFrame = () => {
-            // Guard: strict check on socket state
-            if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-            const video = videoRef.current;
-            if (!video || video.readyState < 2 || video.videoWidth === 0) {
-                // Retry only if socket is still open
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    setTimeout(sendFrame, 500);
-                }
-                return;
+        const buildWsUrl = (input) => {
+            if (!input) return '';
+            const cleanInput = input.trim().replace(/\/$/, '');
+            if (cleanInput.includes('trycloudflare.com') || cleanInput.includes('ngrok-free.dev') || cleanInput.startsWith('http')) {
+                const domain = cleanInput.replace(/^https?:\/\//, '').split(':')[0];
+                return `wss://${domain}/ws`;
             }
+            if (!cleanInput.startsWith('ws')) {
+                return `ws://${cleanInput}:8000/ws`;
+            }
+            return cleanInput;
+        };
+
+        const sendFrame = () => {
+            if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return;
+
+            const video = videoRef.current; // access directly from component ref
+            if (!video || video.readyState < 2 || video.videoWidth === 0) return;
 
             if (!isProcessingRef.current) {
                 try {
@@ -85,16 +79,14 @@ const VideoFeedWithAI = ({
 
                     const w = 640;
                     const h = 480;
-
-                    const canvas = document.createElement('canvas'); // Consider reusing a canvas ref for performance
+                    const canvas = document.createElement('canvas');
                     canvas.width = w;
                     canvas.height = h;
                     const ctx = canvas.getContext('2d');
                     ctx.drawImage(video, 0, 0, w, h);
 
                     const frameData = canvas.toDataURL("image/jpeg", 0.7);
-                    ws.send(frameData);
-
+                    socketRef.current.send(frameData);
                 } catch (e) {
                     console.error("Frame capture error:", e);
                     isProcessingRef.current = false;
@@ -102,133 +94,111 @@ const VideoFeedWithAI = ({
             }
         };
 
-        if (!aiIP) {
-            // --- MOCK MODE ---
-            intervalId = setInterval(() => {
-                const mockData = {
-                    emotion: ['Radość 😃', 'Smutek 😔', 'Złość 😠', 'Neutralny 😐', 'Zaskoczenie 😲'][Math.floor(Math.random() * 5)],
-                    age: Math.floor(Math.random() * (60 - 18 + 1)) + 18,
-                    gender: Math.random() > 0.5 ? 'Mężczyzna' : 'Kobieta'
-                };
+        // Main Watchdog Loop
+        watchdogRef.current = setInterval(() => {
+            const { isAIEnabled, aiIP, userName, stream } = propsRef.current;
 
-                // Only "analyze" if we have valid input (mocking reality)
-                if (stream) {
-                    setAiData(mockData);
-                    if (mockData.emotion) {
-                        setEmotionHistory(prev => {
-                            const newScore = getEmotionScore(mockData.emotion);
-                            if (typeof newScore !== 'number' || isNaN(newScore)) return prev;
-                            const newPoint = {
-                                time: new Date().toLocaleTimeString('pl-PL', { hour12: false, hour: "numeric", minute: "numeric", second: "numeric" }),
-                                value: newScore,
-                                emotion: mockData.emotion.split(' ')[0]
-                            };
-                            return [...prev, newPoint].slice(-30);
-                        });
-                        rawEmotionsRef.current.push(mockData.emotion);
+            // STATUS CHECK
+            // If AI Disabled but Socket Open -> Close it
+            if (!isAIEnabled && socketRef.current) {
+                console.log(`[${userName}] AI Disabled - Closing Socket`);
+                socketRef.current.close();
+                socketRef.current = null;
+                setAiData(null);
+                setEmotionHistory([]);
+                return;
+            }
+
+            // If AI Enabled but Socket Closed -> Open it
+            if (isAIEnabled && !socketRef.current) {
+                if (!aiIP) {
+                    // Mock Mode logic could go here if needed, but keeping simple for now
+                    return;
+                }
+
+                const wsUrl = buildWsUrl(aiIP);
+                if (wsUrl && !wsUrl.includes('undefined')) {
+                    console.log(`[${userName}] Connecting AI Socket: ${wsUrl}`);
+                    try {
+                        const ws = new WebSocket(wsUrl);
+                        socketRef.current = ws;
+
+                        ws.onopen = () => {
+                            console.log(`[${userName}] AI Connected`);
+                            setAiConnectionError(null);
+                            lastActivityRef.current = Date.now();
+                            sendFrame();
+                        };
+
+                        ws.onmessage = (event) => {
+                            try {
+                                isProcessingRef.current = false;
+                                lastActivityRef.current = Date.now();
+                                if (event.data === "PONG") return;
+
+                                const data = JSON.parse(event.data);
+                                // Debug Log
+                                console.log('Data received in tile:', propsRef.current.isLocal ? 'LOCAL' : 'REMOTE', data);
+
+                                if (data.emotion || data.age) {
+                                    setAiData(data);
+                                    if (data.emotion) {
+                                        setEmotionHistory(prev => {
+                                            const newScore = getEmotionScore(data.emotion);
+                                            const newPoint = {
+                                                time: new Date().toLocaleTimeString('pl-PL', { hour12: false, hour: "numeric", minute: "numeric", second: "numeric" }),
+                                                value: newScore || 0,
+                                                emotion: data.emotion.split(' ')[0]
+                                            };
+                                            return [...prev, newPoint].slice(-30);
+                                        });
+                                    }
+                                }
+                                // Next frame
+                                setTimeout(() => {
+                                    if (socketRef.current?.readyState === WebSocket.OPEN) sendFrame();
+                                }, 200);
+
+                            } catch (e) {
+                                console.error("Parse Error:", e);
+                                isProcessingRef.current = false;
+                            }
+                        };
+
+                        ws.onerror = (e) => {
+                            console.error("AI WS Error:", e);
+                            setAiConnectionError("Błąd AI");
+                        };
+
+                        ws.onclose = () => {
+                            console.log(`[${userName}] AI WS Closed`);
+                            socketRef.current = null;
+                        };
+                    } catch (e) {
+                        console.error("Init Error:", e);
+                        setAiConnectionError("Init Error");
                     }
                 }
-            }, 2000);
-        } else {
-            // --- REAL AI MODE ---
-            const buildWsUrl = (input) => {
-                if (!input) return '';
-                const cleanInput = input.trim().replace(/\/$/, '');
+            }
 
-                if (cleanInput.includes('trycloudflare.com') || cleanInput.includes('ngrok-free.dev') || cleanInput.startsWith('http')) {
-                    const domain = cleanInput.replace(/^https?:\/\//, '').split(':')[0];
-                    return `wss://${domain}/ws`;
-                }
-
-                if (!cleanInput.startsWith('ws')) {
-                    return `ws://${cleanInput}:8000/ws`;
-                }
-                return cleanInput;
-            };
-
-            const wsUrl = buildWsUrl(aiIP);
-
-            if (wsUrl && !wsUrl.includes('undefined')) {
-                try {
-                    ws = new WebSocket(wsUrl);
-                    aiSocketRef.current = ws;
-
-                    ws.onopen = () => {
-                        console.log(`AI Connected for ${userName}`);
-                        lastActivityRef.current = Date.now();
-                        sendFrame();
-                    };
-
-                    ws.onmessage = (event) => {
-                        try {
-                            isProcessingRef.current = false;
-                            lastActivityRef.current = Date.now();
-
-                            if (event.data === "PONG") return;
-
-                            const data = JSON.parse(event.data);
-                            if (data.emotion || data.age) {
-                                setAiData(data);
-                                if (data.emotion) {
-                                    setEmotionHistory(prev => {
-                                        const newScore = getEmotionScore(data.emotion);
-                                        const newPoint = {
-                                            time: new Date().toLocaleTimeString('pl-PL', { hour12: false, hour: "numeric", minute: "numeric", second: "numeric" }),
-                                            value: newScore || 0,
-                                            emotion: data.emotion.split(' ')[0]
-                                        };
-                                        return [...prev, newPoint].slice(-30);
-                                    });
-                                    rawEmotionsRef.current.push(data.emotion);
-                                }
-                            }
-                            // Next frame
-                            setTimeout(() => {
-                                if (ws.readyState === WebSocket.OPEN) sendFrame();
-                            }, 200);
-
-                        } catch (e) {
-                            console.error("Parse Error:", e);
-                            isProcessingRef.current = false;
-                        }
-                    };
-
-                    ws.onerror = (e) => {
-                        console.error("AI WS Error:", e);
-                        setAiConnectionError("Błąd AI");
-                    };
-
-                    ws.onclose = () => {
-                        console.log("AI WS Closed");
-                        aiSocketRef.current = null;
-                        ws = null;
-                    };
-
-                    // Watchdog
-                    watchdogInterval = setInterval(() => {
-                        if (aiConnectionError) return;
-                        if (ws && ws.readyState === WebSocket.OPEN && (Date.now() - lastActivityRef.current > 3000)) {
-                            isProcessingRef.current = false;
-                            sendFrame();
-                        }
-                    }, 1000);
-
-                } catch (e) {
-                    setAiConnectionError("Init Error");
+            // Watchdog Logic (Restore activity if stuck)
+            if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+                if (Date.now() - lastActivityRef.current > 3000) {
+                    isProcessingRef.current = false;
+                    sendFrame();
                 }
             }
-        }
+
+        }, 1000); // Check every second
 
         return () => {
-            if (intervalId) clearInterval(intervalId);
-            if (watchdogInterval) clearInterval(watchdogInterval);
-            if (ws) {
-                ws.close();
-                ws = null;
+            if (watchdogRef.current) clearInterval(watchdogRef.current);
+            if (socketRef.current) {
+                socketRef.current.close();
+                socketRef.current = null;
             }
-            aiSocketRef.current = null;
         };
-    }, [isAIEnabled]); // Only re-run if AI is toggled. Removed stream/userName/aiIP to prevent loop.
+    }, []); // STRICTLY EMPTY DEPENDENCY ARRAY
 
     // Emotion Color Helper
     const getEmotionColor = (emotionString) => {
