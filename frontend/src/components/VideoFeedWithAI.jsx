@@ -27,13 +27,25 @@ const VideoFeedWithAI = ({
 
     // 1. Attach Stream to Video
     useEffect(() => {
-        if (videoRef.current && stream) {
+        if (videoRef.current) {
             videoRef.current.srcObject = stream;
         }
     }, [stream]);
 
     // 2. AI Logic (WebSocket & Watchdog)
     useEffect(() => {
+        // If disabled, cleanup and return
+        if (!isAIEnabled) {
+            if (aiSocketRef.current) {
+                aiSocketRef.current.close();
+                aiSocketRef.current = null;
+            }
+            return;
+        }
+
+        // Prevent double initialization
+        if (aiSocketRef.current) return;
+
         let intervalId = null;
         let watchdogInterval = null;
         let ws = null;
@@ -54,11 +66,15 @@ const VideoFeedWithAI = ({
         };
 
         const sendFrame = () => {
+            // Guard: strict check on socket state
             if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
             const video = videoRef.current;
             if (!video || video.readyState < 2 || video.videoWidth === 0) {
-                setTimeout(sendFrame, 500);
+                // Retry only if socket is still open
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    setTimeout(sendFrame, 500);
+                }
                 return;
             }
 
@@ -67,16 +83,16 @@ const VideoFeedWithAI = ({
                     isProcessingRef.current = true;
                     lastActivityRef.current = Date.now();
 
-                    const w = 640; // Optimize: reduced from 1280 for performance per-feed
+                    const w = 640;
                     const h = 480;
 
-                    const canvas = document.createElement('canvas');
+                    const canvas = document.createElement('canvas'); // Consider reusing a canvas ref for performance
                     canvas.width = w;
                     canvas.height = h;
                     const ctx = canvas.getContext('2d');
                     ctx.drawImage(video, 0, 0, w, h);
 
-                    const frameData = canvas.toDataURL("image/jpeg", 0.7); // Optimize: 0.7 quality
+                    const frameData = canvas.toDataURL("image/jpeg", 0.7);
                     ws.send(frameData);
 
                 } catch (e) {
@@ -86,7 +102,7 @@ const VideoFeedWithAI = ({
             }
         };
 
-        if (!isAIEnabled || !aiIP) {
+        if (!aiIP) {
             // --- MOCK MODE ---
             intervalId = setInterval(() => {
                 const mockData = {
@@ -184,12 +200,14 @@ const VideoFeedWithAI = ({
 
                     ws.onclose = () => {
                         console.log("AI WS Closed");
+                        aiSocketRef.current = null;
+                        ws = null;
                     };
 
                     // Watchdog
                     watchdogInterval = setInterval(() => {
                         if (aiConnectionError) return;
-                        if (ws.readyState === WebSocket.OPEN && (Date.now() - lastActivityRef.current > 3000)) {
+                        if (ws && ws.readyState === WebSocket.OPEN && (Date.now() - lastActivityRef.current > 3000)) {
                             isProcessingRef.current = false;
                             sendFrame();
                         }
@@ -204,10 +222,13 @@ const VideoFeedWithAI = ({
         return () => {
             if (intervalId) clearInterval(intervalId);
             if (watchdogInterval) clearInterval(watchdogInterval);
-            if (ws) ws.close();
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
             aiSocketRef.current = null;
         };
-    }, [stream, isAIEnabled, aiIP, userName]); // Re-run if stream or AI settings change
+    }, [isAIEnabled]); // Only re-run if AI is toggled. Removed stream/userName/aiIP to prevent loop.
 
     // Emotion Color Helper
     const getEmotionColor = (emotionString) => {

@@ -66,7 +66,14 @@ export default function MeetingRoom() {
                 window.localStream = myStream
 
                 // 2. INITIALIZE PEERJS
-                myPeer = new Peer()
+                myPeer = new Peer(undefined, {
+                    config: {
+                        iceServers: [
+                            { urls: 'stun:stun.l.google.com:19302' },
+                            { urls: 'stun:stun1.l.google.com:19302' },
+                        ]
+                    }
+                })
                 peerInstance.current = myPeer
 
                 myPeer.on('open', (id) => {
@@ -284,8 +291,8 @@ export default function MeetingRoom() {
 
                 {/* Video Grid */}
                 <div className={`grid gap-6 w-full max-w-6xl mx-auto place-items-center transition-all duration-500 ease-in-out ${(remoteStreams.length + 1) <= 1 ? 'grid-cols-1 max-w-4xl' :
-                        (remoteStreams.length + 1) <= 4 ? 'grid-cols-1 md:grid-cols-2' :
-                            'grid-cols-2 lg:grid-cols-3'
+                    (remoteStreams.length + 1) <= 4 ? 'grid-cols-1 md:grid-cols-2' :
+                        'grid-cols-2 lg:grid-cols-3'
                     }`}>
                     {/* 1. Local Video Feed */}
                     <div className="w-full flex justify-center">
