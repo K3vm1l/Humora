@@ -11,7 +11,8 @@ const VideoFeedWithAI = ({
     onToggleVideo,
     isAudioMuted,
     isVideoOff,
-    showControls = false
+    showControls = false,
+    isHandRaised = false
 }) => {
     const videoRef = useRef(null);
     const [aiData, setAiData] = useState(null);
@@ -228,7 +229,7 @@ const VideoFeedWithAI = ({
     };
 
     return (
-        <div className="relative group overflow-hidden rounded-2xl border-2 border-gray-800 shadow-2xl bg-gray-900 aspect-video w-full h-full">
+        <div className="relative w-full h-full max-h-[70vh] aspect-video bg-slate-800 rounded-2xl overflow-hidden border border-white/10 shadow-2xl group transition-all duration-300 hover:shadow-indigo-500/20 hover:border-indigo-500/30">
             <video
                 ref={videoRef}
                 autoPlay
@@ -237,60 +238,69 @@ const VideoFeedWithAI = ({
                 className={`w-full h-full object-cover ${isLocal ? 'scale-x-[-1]' : ''}`}
             />
 
-            {/* Overlay Info */}
-            <div className="absolute bottom-4 right-4 bg-black/50 px-2 py-1 rounded text-xs text-white z-20">
-                {userName} {isLocal ? '(Ty)' : ''}
-            </div>
+            {/* Hand Raise Icon (Top Right) */}
+            {isHandRaised && (
+                <div className="absolute top-4 right-4 z-30 bg-yellow-500 animate-bounce p-2 rounded-full shadow-lg text-xl">
+                    ✋
+                </div>
+            )}
 
-            {/* AI Error */}
+            {/* Emotion Overlay (Top Left) */}
+            {aiData && (
+                <div className="absolute top-4 left-4 z-20 bg-black/50 backdrop-blur-md p-3 rounded-xl border border-white/10 shadow-lg glow-white transition-all flex flex-col gap-1">
+                    <div className={`text-xl font-bold ${getEmotionColor(aiData.emotion)}`}>
+                        {aiData.emotion || 'Analiza...'}
+                    </div>
+                    {(aiData.age || aiData.gender) && (
+                        <div className="flex gap-2 text-[10px] text-gray-300 font-mono opacity-80">
+                            <span>{aiData.age ? `${aiData.age} l.` : ''}</span>
+                            <span>{aiData.gender || ''}</span>
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* AI Error Warning (Shifted down to avoid overlap if hand raised) */}
             {aiConnectionError && (
-                <div className="absolute top-2 right-2 bg-red-900/80 text-white text-[10px] px-2 py-1 rounded">
+                <div className={`absolute right-4 bg-red-500/80 text-white text-[10px] px-2 py-1 rounded backdrop-blur ${isHandRaised ? 'top-16' : 'top-4'}`}>
                     ⚠️ {aiConnectionError}
                 </div>
             )}
 
-            {/* AI Stats Overlay */}
-            {aiData && (
-                <div className="absolute top-4 left-4 z-20 flex flex-col gap-2">
-                    <div className="bg-black/40 backdrop-blur-md p-3 rounded-xl border border-white/10 shadow-lg glow-white">
-                        <div className={`text-2xl font-bold transition-all duration-300 ${getEmotionColor(aiData.emotion)}`}>
-                            {aiData.emotion || '...'}
-                        </div>
-                        <div className="flex gap-3 text-[10px] text-gray-300 font-mono mt-1">
-                            <span>Wiek: {aiData.age || '--'}</span>
-                            <span>Płeć: {aiData.gender || '--'}</span>
-                        </div>
+            {/* Name Tag (Bottom Right) */}
+            <div className="absolute bottom-4 right-4 z-30 bg-black/60 backdrop-blur px-3 py-1.5 rounded-lg text-xs text-white font-medium border border-white/5">
+                {userName} {isLocal ? '(Ty)' : ''}
+            </div>
+
+            {/* Chart Overlay (Bottom Full Width) */}
+            {emotionHistory.length > 1 && (
+                <div className="absolute bottom-0 left-0 right-0 h-24 z-20 bg-gradient-to-t from-black/90 via-black/40 to-transparent pointer-events-none">
+                    <div className="w-full h-full opacity-70">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <LineChart data={emotionHistory}>
+                                <XAxis dataKey="time" hide />
+                                <YAxis domain={[0, 100]} hide />
+                                <Line
+                                    type="basis"
+                                    dataKey="value"
+                                    stroke={getEmotionHexColor(aiData?.emotion)}
+                                    strokeWidth={3}
+                                    dot={false}
+                                    isAnimationActive={false}
+                                />
+                            </LineChart>
+                        </ResponsiveContainer>
                     </div>
                 </div>
             )}
 
-            {/* Chart Overlay (Bottom Left) */}
-            {emotionHistory.length > 1 && (
-                <div className="absolute bottom-4 left-4 z-20 w-1/3 h-24 opacity-60 hover:opacity-100 transition-opacity">
-                    <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={emotionHistory}>
-                            <XAxis dataKey="time" hide />
-                            <YAxis domain={[0, 100]} hide />
-                            <Line
-                                type="monotone"
-                                dataKey="value"
-                                stroke={getEmotionHexColor(aiData?.emotion)}
-                                strokeWidth={3}
-                                dot={false}
-                                isAnimationActive={false}
-                            />
-                        </LineChart>
-                    </ResponsiveContainer>
-                </div>
-            )}
-
-            {/* Local Controls (only if enabled) */}
+            {/* Local Controls (Hover) */}
             {showControls && isLocal && (
-                <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex gap-4 z-30 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button onClick={onToggleAudio} className={`p-2 rounded-full ${isAudioMuted ? 'bg-red-500' : 'bg-gray-700'}`}>
+                <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 flex gap-4 z-30 opacity-0 group-hover:opacity-100 transition-all duration-300 scale-90 group-hover:scale-100">
+                    <button onClick={onToggleAudio} className={`p-4 rounded-full transition-all shadow-xl ${isAudioMuted ? 'bg-red-500 hover:bg-red-600' : 'bg-slate-700/80 hover:bg-slate-600 backdrop-blur'}`}>
                         {isAudioMuted ? '🔇' : '🎤'}
                     </button>
-                    <button onClick={onToggleVideo} className={`p-2 rounded-full ${isVideoOff ? 'bg-red-500' : 'bg-gray-700'}`}>
+                    <button onClick={onToggleVideo} className={`p-4 rounded-full transition-all shadow-xl ${isVideoOff ? 'bg-red-500 hover:bg-red-600' : 'bg-slate-700/80 hover:bg-slate-600 backdrop-blur'}`}>
                         {isVideoOff ? '🚫' : '📷'}
                     </button>
                 </div>
