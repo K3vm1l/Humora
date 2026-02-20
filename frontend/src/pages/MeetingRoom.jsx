@@ -28,10 +28,27 @@ export default function MeetingRoom() {
     const [chatInput, setChatInput] = useState('')
     const chatScrollRef = useRef(null)
 
+    // Call Timer State
+    const [callSeconds, setCallSeconds] = useState(0)
+
     const peerInstance = useRef(null)
     const localStreamRef = useRef(null)
     const roomChannelRef = useRef(null)
     const startTimeRef = useRef(Date.now()) // Track meeting start time
+
+    // Call Timer Effect
+    useEffect(() => {
+        const timer = setInterval(() => {
+            setCallSeconds(prev => prev + 1)
+        }, 1000)
+        return () => clearInterval(timer)
+    }, [])
+
+    const formatTime = (totalSeconds) => {
+        const m = Math.floor(totalSeconds / 60).toString().padStart(2, '0')
+        const s = (totalSeconds % 60).toString().padStart(2, '0')
+        return `${m}:${s}`
+    }
 
     useEffect(() => {
         let isMounted = true;
@@ -95,7 +112,6 @@ export default function MeetingRoom() {
 
                     roomChannel.on('broadcast', { event: 'peer-joined' }, (payload) => {
                         const { peerId: remotePeerId, userName: remoteName, userId: remoteDbId } = payload.payload;
-                        console.log('Peer joined:', remoteName)
 
                         // Call them
                         const call = myPeer.call(remotePeerId, myStream, {
@@ -276,8 +292,13 @@ export default function MeetingRoom() {
             {/* Main Content Area (Videos) */}
             {/* Main Content Area (Videos) */}
             <div className="flex-1 flex flex-col items-center justify-center p-4 min-h-0 overflow-hidden relative">
-                {/* Header Info (Fixed & Centered) */}
-                <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex gap-2 bg-slate-900/80 backdrop-blur-md px-6 py-2 rounded-full border border-white/10 text-xs shadow-xl hover:bg-slate-900 transition-colors">
+                {/* Header Info (Top Left) */}
+                <div className="fixed top-4 left-4 z-50 flex gap-2 bg-slate-900/80 backdrop-blur-md px-6 py-2 rounded-full border border-white/10 text-xs shadow-xl hover:bg-slate-900 transition-colors">
+                    <p className="text-gray-400 flex items-center gap-2">
+                        <span>⌛ Czas:</span>
+                        <span className="text-white font-mono font-bold">{formatTime(callSeconds)}</span>
+                    </p>
+                    <div className="w-px h-4 bg-white/10 self-center mx-2"></div>
                     <p className="text-gray-400 flex items-center gap-2">
                         <span>🏠 Pokój:</span>
                         <span className="text-white font-mono font-bold tracking-wider">{roomId}</span>

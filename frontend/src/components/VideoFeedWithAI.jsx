@@ -18,12 +18,16 @@ const VideoFeedWithAI = ({
     const [aiData, setAiData] = useState(null);
     const [emotionHistory, setEmotionHistory] = useState([]);
     const [aiConnectionError, setAiConnectionError] = useState(null);
+    const [reportStatus, setReportStatus] = useState('idle'); // idle, empty, success
 
     // AI Refs
     const socketRef = useRef(null);
     const watchdogRef = useRef(null);
     const isProcessingRef = useRef(false);
     const lastActivityRef = useRef(Date.now());
+
+    // Store all raw emotion strings to calculate report statistics later
+    const emotionRecordsRef = useRef([]);
 
     // Store latest props in ref to access them inside the interval without dependencies
     const propsRef = useRef({ isAIEnabled, aiIP, userName, stream, isLocal });
@@ -88,7 +92,6 @@ const VideoFeedWithAI = ({
                     const frameData = canvas.toDataURL("image/jpeg", 0.7);
                     socketRef.current.send(frameData);
                 } catch (e) {
-                    console.error("Frame capture error:", e);
                     isProcessingRef.current = false;
                 }
             }
@@ -101,7 +104,6 @@ const VideoFeedWithAI = ({
             // STATUS CHECK
             // If AI Disabled but Socket Open -> Close it
             if (!isAIEnabled && socketRef.current) {
-                console.log(`[${userName}] AI Disabled - Closing Socket`);
                 socketRef.current.close();
                 socketRef.current = null;
                 setAiData(null);
@@ -118,13 +120,11 @@ const VideoFeedWithAI = ({
 
                 const wsUrl = buildWsUrl(aiIP);
                 if (wsUrl && !wsUrl.includes('undefined')) {
-                    console.log(`[${userName}] Connecting AI Socket: ${wsUrl}`);
                     try {
                         const ws = new WebSocket(wsUrl);
                         socketRef.current = ws;
 
                         ws.onopen = () => {
-                            console.log(`[${userName}] AI Connected`);
                             setAiConnectionError(null);
                             lastActivityRef.current = Date.now();
                             sendFrame();
@@ -137,12 +137,11 @@ const VideoFeedWithAI = ({
                                 if (event.data === "PONG") return;
 
                                 const data = JSON.parse(event.data);
-                                // Debug Log
-                                console.log('Data received in tile:', propsRef.current.isLocal ? 'LOCAL' : 'REMOTE', data);
 
                                 if (data.emotion || data.age) {
                                     setAiData(data);
                                     if (data.emotion) {
+                                        emotionRecordsRef.current.push(data.emotion);
                                         setEmotionHistory(prev => {
                                             const newScore = getEmotionScore(data.emotion);
                                             const newPoint = {
@@ -160,22 +159,18 @@ const VideoFeedWithAI = ({
                                 }, 200);
 
                             } catch (e) {
-                                console.error("Parse Error:", e);
                                 isProcessingRef.current = false;
                             }
                         };
 
                         ws.onerror = (e) => {
-                            console.error("AI WS Error:", e);
                             setAiConnectionError("Błąd AI");
                         };
 
                         ws.onclose = () => {
-                            console.log(`[${userName}] AI WS Closed`);
                             socketRef.current = null;
                         };
                     } catch (e) {
-                        console.error("Init Error:", e);
                         setAiConnectionError("Init Error");
                     }
                 }
@@ -217,6 +212,114 @@ const VideoFeedWithAI = ({
         if (['złość', 'gniew', 'angry'].some(e => emotion.includes(e))) return '#ef4444';
         if (['smutek', 'sad'].some(e => emotion.includes(e))) return '#60a5fa';
         return '#8b5cf6'; // default
+    };
+
+    // Download Report Logic
+    const handleDownloadReport = () => {
+        const video = videoRef.current;
+        if (!video || video.videoWidth === 0) return;
+
+        // Get current data or use fallbacks
+        let currentEmotion = aiData?.emotion;
+        let currentAge = aiData?.age;
+        let currentGender = aiData?.gender;
+
+        const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        if (!currentEmotion) {
+            if (isLocalhost) {
+                console.info("Brak danych: Wstrzykiwanie danych testowych (Localhost Mode)");
+                currentEmotion = 'Radość 😄';
+                currentAge = 25;
+                currentGender = 'Kobieta';
+            } else {
+                setReportStatus('empty');
+                setTimeout(() => setReportStatus('idle'), 2000);
+                return;
+            }
+        }
+
+        // Setup Canvas
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+
+        // Draw Video Frame (Mirror if local)
+        if (isLocal) {
+            ctx.translate(canvas.width, 0);
+            ctx.scale(-1, 1);
+        }
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        // Reset transform for text
+        if (isLocal) {
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+        }
+
+        // Setup Text Rendering
+        const padding = 30;
+        let currentY = padding + 20;
+
+        const drawText = (text, x, y, size, color, isBold = true) => {
+            ctx.font = `${isBold ? 'bold' : 'normal'} ${size}px "Courier New", monospace`;
+
+            // Text Shadow / Outline
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
+            ctx.shadowBlur = 4;
+            ctx.shadowOffsetX = 2;
+            ctx.shadowOffsetY = 2;
+
+            ctx.fillStyle = color;
+            ctx.fillText(text, x, y);
+
+            // Reset shadow
+            ctx.shadowColor = 'transparent';
+            ctx.shadowBlur = 0;
+            ctx.shadowOffsetX = 0;
+            ctx.shadowOffsetY = 0;
+
+            return y + size + 10; // Return next Y position
+        };
+
+        // Draw Overlays
+        currentY = drawText('HUMORA AI REPORT', padding, currentY, 28, '#ffffff');
+        currentY += 10;
+
+        // Date & Time
+        const date = new Date();
+        const dateString = date.toLocaleDateString();
+        const timeString = date.toLocaleTimeString();
+        currentY = drawText(`${dateString} ${timeString}`, padding, currentY, 18, '#9ca3af', false);
+        currentY += 10;
+
+        // User
+        currentY = drawText(`USER: ${userName}`, padding, currentY, 22, '#eab308');
+
+        // Emotion (Green)
+        currentY = drawText(`EMOTION: ${currentEmotion.toUpperCase()}`, padding, currentY, 24, '#22c55e');
+
+        // Age & Gender
+        if (currentAge || currentGender) {
+            const demoText = `AGE: ${currentAge || '?'} | GENDER: ${currentGender ? currentGender.toUpperCase() : '?'}`;
+            drawText(demoText, padding, currentY, 20, '#ffffff');
+        }
+
+        // Generate and Download Image
+        const reportImage = canvas.toDataURL('image/jpeg', 0.9);
+
+        const safeUserName = userName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+        const timestamp = `${date.getHours()}-${date.getMinutes()}-${date.getSeconds()}`;
+
+        const a = document.createElement('a');
+        a.href = reportImage;
+        a.download = `humora-report-${safeUserName}-${timestamp}.jpg`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        // 3. UI Polish - Success State
+        setReportStatus('success');
+        setTimeout(() => setReportStatus('idle'), 3000);
     };
 
     return (
@@ -262,6 +365,24 @@ const VideoFeedWithAI = ({
             <div className="absolute bottom-4 right-4 z-30 bg-black/60 backdrop-blur px-3 py-1.5 rounded-lg text-xs text-white font-medium border border-white/5">
                 {userName} {isLocal ? '(Ty)' : ''}
             </div>
+
+            {/* Local Features (Bottom Left) */}
+            {isLocal && (
+                <div className="absolute bottom-12 left-4 z-30 flex flex-col gap-2">
+                    <button
+                        onClick={handleDownloadReport}
+                        className={`text-[10px] px-3 py-1.5 rounded-lg font-bold shadow-lg transition-colors border backdrop-blur ${reportStatus === 'empty' ? 'bg-red-600/90 hover:bg-red-500 border-red-400/50 shadow-red-500/20 text-white' :
+                            reportStatus === 'success' ? 'bg-green-600/90 hover:bg-green-500 border-green-400/50 shadow-green-500/20 text-white' :
+                                'bg-indigo-600/90 hover:bg-indigo-500 text-white border-indigo-400/30 shadow-indigo-500/20'
+                            }`}
+                        title="Pobierz statystyki sesji jako .txt"
+                    >
+                        {reportStatus === 'empty' ? 'Brak danych! ❌' :
+                            reportStatus === 'success' ? 'Pobrano! ✅' :
+                                '📄 Raport z analizy'}
+                    </button>
+                </div>
+            )}
 
             {/* Chart Overlay (Bottom Full Width) */}
             {emotionHistory.length > 1 && (
