@@ -141,7 +141,7 @@ const VideoFeedWithAI = ({
                                 if (data.emotion || data.age) {
                                     setAiData(data);
                                     if (data.emotion) {
-                                        emotionRecordsRef.current.push(data.emotion);
+                                        emotionRecordsRef.current.push(data);
                                         setEmotionHistory(prev => {
                                             const newScore = getEmotionScore(data.emotion);
                                             const newPoint = {
@@ -219,23 +219,28 @@ const VideoFeedWithAI = ({
         const video = videoRef.current;
         if (!video || video.videoWidth === 0) return;
 
-        // Get current data or use fallbacks
-        let currentEmotion = aiData?.emotion;
-        let currentAge = aiData?.age;
-        let currentGender = aiData?.gender;
+        // Safety Guard
+        if (!emotionRecordsRef.current.length && !aiData?.emotion) {
+            alert('Brak danych z analizy AI. Poczekaj na pierwszą detekcję.');
+            setReportStatus('empty');
+            setTimeout(() => setReportStatus('idle'), 2000);
+            return;
+        }
 
-        const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-        if (!currentEmotion) {
-            if (isLocalhost) {
-                console.info("Brak danych: Wstrzykiwanie danych testowych (Localhost Mode)");
-                currentEmotion = 'Radość 😄';
-                currentAge = 25;
-                currentGender = 'Kobieta';
-            } else {
-                setReportStatus('empty');
-                setTimeout(() => setReportStatus('idle'), 2000);
-                return;
-            }
+        // Real-time Data Sync
+        const latestRecord = emotionRecordsRef.current.length > 0
+            ? emotionRecordsRef.current[emotionRecordsRef.current.length - 1]
+            : aiData;
+
+        let currentEmotion = latestRecord?.emotion || aiData?.emotion;
+        let currentAge = latestRecord?.age || aiData?.age;
+        let currentGender = latestRecord?.gender || aiData?.gender;
+
+        // Translation Check
+        if (currentGender) {
+            const lowerGender = currentGender.toLowerCase();
+            if (lowerGender === 'male') currentGender = 'Mężczyzna';
+            else if (lowerGender === 'female') currentGender = 'Kobieta';
         }
 
         // Setup Canvas
