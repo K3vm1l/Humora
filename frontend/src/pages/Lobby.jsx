@@ -25,7 +25,7 @@ export default function Lobby() {
     const [isLoggedIn, setIsLoggedIn] = useState(false)
 
     // Remote AI Connection State
-    const [useRemoteAi, setUseRemoteAi] = useState(false)
+    const [useRemoteAi, setUseRemoteAi] = useState(true)
     const [tailscaleIp, setTailscaleIp] = useState(() => {
         return localStorage.getItem('tailscaleIp') || ''
     })
@@ -112,7 +112,6 @@ export default function Lobby() {
                 videoRef.current.srcObject = null
             }
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
 
     useEffect(() => {
@@ -265,7 +264,6 @@ export default function Lobby() {
             localStorage.setItem('tailscaleIp', tailscaleIp)
         }
 
-        // Explicitly stop all tracks before navigating to release hardware
         // Explicitly stop all tracks before navigating to release hardware
         if (stream) {
             stream.getTracks().forEach(track => {

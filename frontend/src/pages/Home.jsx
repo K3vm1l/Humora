@@ -22,7 +22,7 @@ const ChatWidget = ({ friend, session, index, onClose }) => {
         const channel = supabase.channel(`chat:${friend.id}`)
             .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
                 const msg = payload.new;
-                // Only add if it's from the friend (our own are added optimistically)
+                // Only add if it's from the friend
                 if (msg.sender_id === friend.id && msg.receiver_id === session.user.id) {
                     setMessages(prev => [...prev, msg]);
                 }
@@ -167,7 +167,6 @@ export default function Home() {
     }, []);
 
     // Presence & Call Effect
-    // Presence & Call Effect
     useEffect(() => {
         if (!session) return;
 
@@ -293,7 +292,7 @@ export default function Home() {
                 return;
             }
 
-            // Check if already friends
+            // Step 2: Check if already friends
             const { data: existingFriend } = await supabase
                 .from('friends')
                 .select('id')
@@ -336,7 +335,7 @@ export default function Home() {
                 <div className="space-y-8 flex flex-col justify-center">
                     <div className="bg-gray-800 p-8 rounded-2xl shadow-lg border border-gray-700 text-center md:text-left">
                         <h1 className="text-3xl font-bold mb-2">
-                            Witaj w Humora, <span className="text-purple-400 block md:inline">{username || 'User'}</span>
+                            Witaj w Analizatorze emocji, <span className="text-purple-400 block md:inline">{username || 'User'}</span>
                         </h1>
                         <p className="text-gray-400">Twój panel sterowania analizą emocji</p>
                     </div>

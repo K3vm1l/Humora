@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import supabase from '../supabaseClient';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 
 export default function History() {
     const navigate = useNavigate();
     const [meetings, setMeetings] = useState([]);
     const [loading, setLoading] = useState(true);
     const [session, setSession] = useState(null);
+    const [expandedChartId, setExpandedChartId] = useState(null);
 
     useEffect(() => {
         supabase.auth.getSession().then(({ data: { session } }) => {
@@ -227,80 +229,147 @@ ${aiSection}
                                         const summary = meeting.meeting_summaries?.[0];
 
                                         return (
-                                            <tr key={meeting.id} className="hover:bg-gray-700/30 transition-colors">
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-300">
-                                                    {new Date(meeting.started_at).toLocaleString('pl-PL')}
-                                                </td>
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-white">
-                                                    {meeting.participant_name || 'Nieznany'}
-                                                </td>
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-400 font-mono">
-                                                    {getDuration()}
-                                                </td>
-                                                <td className="px-6 py-4 whitespace-nowrap">
-                                                    {summary ? (
-                                                        <div className="group relative inline-block cursor-help">
-                                                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${summary.dominant_emotion === 'Radość' ? 'bg-green-900/30 text-green-400 border-green-500/30' :
-                                                                summary.dominant_emotion === 'Złość' ? 'bg-red-900/30 text-red-400 border-red-500/30' :
-                                                                    summary.dominant_emotion === 'Smutek' ? 'bg-blue-900/30 text-blue-400 border-blue-500/30' :
-                                                                        'bg-gray-700 text-gray-300 border-gray-600'
-                                                                }`}>
-                                                                {summary.dominant_emotion}
-                                                            </span>
+                                            <React.Fragment key={meeting.id}>
+                                                <tr className="hover:bg-gray-700/30 transition-colors">
+                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-300">
+                                                        {new Date(meeting.started_at).toLocaleString('pl-PL')}
+                                                    </td>
+                                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-white">
+                                                        {meeting.participant_name || 'Nieznany'}
+                                                    </td>
+                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-400 font-mono">
+                                                        {getDuration()}
+                                                    </td>
+                                                    <td className="px-6 py-4 whitespace-nowrap">
+                                                        {summary ? (
+                                                            <div className="group relative inline-block cursor-help">
+                                                                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${summary.dominant_emotion === 'Radość' ? 'bg-green-900/30 text-green-400 border-green-500/30' :
+                                                                    summary.dominant_emotion === 'Złość' ? 'bg-red-900/30 text-red-400 border-red-500/30' :
+                                                                        summary.dominant_emotion === 'Smutek' ? 'bg-blue-900/30 text-blue-400 border-blue-500/30' :
+                                                                            'bg-gray-700 text-gray-300 border-gray-600'
+                                                                    }`}>
+                                                                    {summary.dominant_emotion}
+                                                                </span>
 
-                                                            {/* Tooltip */}
-                                                            <div className="invisible group-hover:visible absolute z-10 bottom-full left-1/2 transform -translate-x-1/2 mb-2 w-48 bg-gray-900 border border-gray-700 rounded-lg shadow-xl p-3 text-xs">
-                                                                {summary.emotion_stats && Object.entries(summary.emotion_stats).map(([emotion, pct]) => (
-                                                                    <div key={emotion} className="flex justify-between py-0.5 text-gray-300">
-                                                                        <span>{emotion}:</span>
-                                                                        <span className="font-mono text-white">{pct}%</span>
-                                                                    </div>
-                                                                ))}
-                                                                <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
+                                                                {/* Tooltip */}
+                                                                <div className="invisible group-hover:visible absolute z-10 bottom-full left-1/2 transform -translate-x-1/2 mb-2 w-48 bg-gray-900 border border-gray-700 rounded-lg shadow-xl p-3 text-xs">
+                                                                    {summary.emotion_stats && Object.entries(summary.emotion_stats).map(([emotion, pct]) => (
+                                                                        <div key={emotion} className="flex justify-between py-0.5 text-gray-300">
+                                                                            <span>{emotion}:</span>
+                                                                            <span className="font-mono text-white">{pct}%</span>
+                                                                        </div>
+                                                                    ))}
+                                                                    <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
+                                                                </div>
                                                             </div>
+                                                        ) : (
+                                                            <span className="text-xs text-gray-600">-</span>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-6 py-4">
+                                                        <div className="flex -space-x-2 overflow-hidden">
+                                                            {meeting.captures?.slice(0, 3).map((cap, i) => (
+                                                                <img
+                                                                    key={cap.id}
+                                                                    src={cap.image_url}
+                                                                    alt="Capture"
+                                                                    className="inline-block h-8 w-8 rounded-full ring-2 ring-gray-800 object-cover"
+                                                                    title={`Capture ${i + 1}`}
+                                                                />
+                                                            ))}
+                                                            {meeting.captures?.length > 3 && (
+                                                                <div className="h-8 w-8 rounded-full bg-gray-700 flex items-center justify-center text-xs text-white ring-2 ring-gray-800">
+                                                                    +{meeting.captures.length - 3}
+                                                                </div>
+                                                            )}
+                                                            {(!meeting.captures || meeting.captures.length === 0) && (
+                                                                <span className="text-xs text-gray-500 italic">Brak</span>
+                                                            )}
                                                         </div>
-                                                    ) : (
-                                                        <span className="text-xs text-gray-600">-</span>
+                                                    </td>
+                                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-3">
+                                                        <button
+                                                            onClick={() => setExpandedChartId(expandedChartId === meeting.id ? null : meeting.id)}
+                                                            className="text-green-400 hover:text-green-300 transition-colors"
+                                                            title="Oś czasu emocji"
+                                                        >
+                                                            {expandedChartId === meeting.id ? 'Ukryj Wykres' : '📈 Wykres'}
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handleDownload(meeting)}
+                                                            className="text-indigo-400 hover:text-indigo-300 transition-colors"
+                                                            title="Pobierz raport"
+                                                        >
+                                                            ⬇ Pobierz
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handleDelete(meeting.id, meeting.captures)}
+                                                            className="text-red-500 hover:text-red-400 transition-colors"
+                                                            title="Usuń z historii"
+                                                        >
+                                                            🗑 Usuń
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                                {
+                                                    expandedChartId === meeting.id && summary?.timeline_data && (
+                                                        <tr>
+                                                            <td colSpan="6" className="bg-gray-800/80 p-4 border-t border-gray-700">
+                                                                <div className="h-64 w-full">
+                                                                    <h4 className="text-gray-300 mb-2 font-medium">Oś Czasu Emocji Ai</h4>
+                                                                    <ResponsiveContainer width="100%" height="100%">
+                                                                        <LineChart
+                                                                            data={summary.timeline_data.map(item => {
+                                                                                let value = 0;
+                                                                                const emotion = item.emotion.toLowerCase();
+                                                                                if (emotion.includes('happy') || emotion.includes('radość') || emotion.includes('szczęście')) value = 100;
+                                                                                else if (emotion.includes('surprise') || emotion.includes('zaskoczenie')) value = 70;
+                                                                                else if (emotion.includes('neutral') || emotion.includes('naturalny')) value = 50;
+                                                                                else if (emotion.includes('sad') || emotion.includes('smutek') || emotion.includes('fear') || emotion.includes('disgust')) value = 20;
+                                                                                else if (emotion.includes('angry') || emotion.includes('złość') || emotion.includes('gniew')) value = 10;
+
+                                                                                // 🕒 NOWOŚĆ: Obliczanie dokładnego czasu dla danego punktu
+                                                                                const totalPoints = summary.timeline_data.length;
+                                                                                const totalSeconds = summary.duration_seconds || 0;
+                                                                                const currentSecond = totalPoints > 1 ? Math.round((item.timeIndex / (totalPoints - 1)) * totalSeconds) : 0;
+
+                                                                                const mins = Math.floor(currentSecond / 60);
+                                                                                const secs = currentSecond % 60;
+                                                                                const timeFormatted = `${mins}:${secs.toString().padStart(2, '0')}`;
+
+                                                                                return { timeFormatted, value, emotion: item.emotion };
+                                                                            })}
+                                                                        >
+                                                                            {/* 🕒 NOWOŚĆ: Oś X pokazuje teraz czas, minTickGap zapobiega nakładaniu się napisów */}
+                                                                            <XAxis
+                                                                                dataKey="timeFormatted"
+                                                                                stroke="#9ca3af"
+                                                                                minTickGap={40}
+                                                                                tick={{ fontSize: 12 }}
+                                                                            />
+                                                                            <YAxis domain={[0, 100]} stroke="#9ca3af" hide />
+
+                                                                            {/* 🕒 NOWOŚĆ: Tooltip pokazuje czas na samej górze dymku */}
+                                                                            <Tooltip
+                                                                                contentStyle={{ backgroundColor: '#1f2937', borderColor: '#374151', color: '#f3f4f6', borderRadius: '8px' }}
+                                                                                formatter={(value, name, props) => [props.payload.emotion, 'Wykryto']}
+                                                                                labelFormatter={(label) => `Czas spotkania: ${label}`}
+                                                                            />
+                                                                            <Line
+                                                                                type="monotone"
+                                                                                dataKey="value"
+                                                                                stroke="#8b5cf6"
+                                                                                strokeWidth={3}
+                                                                                dot={false}
+                                                                                activeDot={{ r: 6, fill: '#10b981', stroke: '#fff', strokeWidth: 2 }}
+                                                                            />
+                                                                        </LineChart>
+                                                                    </ResponsiveContainer>
+                                                                </div>
+                                                            </td>
+                                                        </tr>
                                                     )}
-                                                </td>
-                                                <td className="px-6 py-4">
-                                                    <div className="flex -space-x-2 overflow-hidden">
-                                                        {meeting.captures?.slice(0, 3).map((cap, i) => (
-                                                            <img
-                                                                key={cap.id}
-                                                                src={cap.image_url}
-                                                                alt="Capture"
-                                                                className="inline-block h-8 w-8 rounded-full ring-2 ring-gray-800 object-cover"
-                                                                title={`Capture ${i + 1}`}
-                                                            />
-                                                        ))}
-                                                        {meeting.captures?.length > 3 && (
-                                                            <div className="h-8 w-8 rounded-full bg-gray-700 flex items-center justify-center text-xs text-white ring-2 ring-gray-800">
-                                                                +{meeting.captures.length - 3}
-                                                            </div>
-                                                        )}
-                                                        {(!meeting.captures || meeting.captures.length === 0) && (
-                                                            <span className="text-xs text-gray-500 italic">Brak</span>
-                                                        )}
-                                                    </div>
-                                                </td>
-                                                <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-3">
-                                                    <button
-                                                        onClick={() => handleDownload(meeting)}
-                                                        className="text-indigo-400 hover:text-indigo-300 transition-colors"
-                                                        title="Pobierz raport"
-                                                    >
-                                                        ⬇ Pobierz
-                                                    </button>
-                                                    <button
-                                                        onClick={() => handleDelete(meeting.id, meeting.captures)}
-                                                        className="text-red-500 hover:text-red-400 transition-colors"
-                                                        title="Usuń z historii"
-                                                    >
-                                                        🗑 Usuń
-                                                    </button>
-                                                </td>
-                                            </tr>
+                                            </React.Fragment>
                                         );
                                     })}
                                 </tbody>

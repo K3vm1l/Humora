@@ -12,7 +12,8 @@ const VideoFeedWithAI = ({
     isAudioMuted,
     isVideoOff,
     showControls = false,
-    isHandRaised = false
+    isHandRaised = false,
+    onStatsUpdate
 }) => {
     const videoRef = useRef(null);
     const [aiData, setAiData] = useState(null);
@@ -45,6 +46,55 @@ const VideoFeedWithAI = ({
 
     // 2. AI Logic (WebSocket & Watchdog in Strict Isolation)
     useEffect(() => {
+        // Funkcja licząca procenty i wysyłająca je do rodzica
+        const calculateAndEmitStats = (records) => {
+            if (!onStatsUpdate || !records || records.length === 0) return;
+
+            const counts = {};
+            records.forEach(r => {
+                counts[r.emotion] = (counts[r.emotion] || 0) + 1;
+            });
+
+            const total = records.length;
+            const percentages = {};
+            let dominantEmotion = 'Brak';
+            let maxCount = 0;
+
+            for (const [emotion, count] of Object.entries(counts)) {
+                percentages[emotion] = Math.round((count / total) * 100);
+                if (count > maxCount) {
+                    maxCount = count;
+                    dominantEmotion = emotion;
+                }
+            }
+
+            // Tłumaczenie dla bazy danych
+            if (dominantEmotion === 'Happy') dominantEmotion = 'Radość';
+            else if (dominantEmotion === 'Angry') dominantEmotion = 'Złość';
+            else if (dominantEmotion === 'Sad') dominantEmotion = 'Smutek';
+            else if (dominantEmotion === 'Neutral') dominantEmotion = 'Neutralny';
+            else if (dominantEmotion === 'Surprise') dominantEmotion = 'Zaskoczenie';
+
+            // Tłumaczenie kluczy w obiekcie percentages
+            const translatedPercentages = {};
+            Object.keys(percentages).forEach(key => {
+                let newKey = key;
+                if (key === 'Happy') newKey = 'Radość';
+                else if (key === 'Angry') newKey = 'Złość';
+                else if (key === 'Sad') newKey = 'Smutek';
+                else if (key === 'Neutral') newKey = 'Neutralny';
+                else if (key === 'Surprise') newKey = 'Zaskoczenie';
+                translatedPercentages[newKey] = percentages[key];
+            });
+
+            const timelineData = records.map((r, index) => ({
+                timeIndex: index,
+                emotion: r.emotion
+            }));
+
+            onStatsUpdate({ dominant: dominantEmotion, percentages: translatedPercentages, timeline: timelineData });
+        };
+
         // Helper to get score
         const getEmotionScore = (emotionString) => {
             if (!emotionString || typeof emotionString !== 'string') return 0;
@@ -142,6 +192,10 @@ const VideoFeedWithAI = ({
                                     setAiData(data);
                                     if (data.emotion) {
                                         emotionRecordsRef.current.push(data);
+
+                                        // Aktualizacja statystyk i wysłanie ich do rodzica
+                                        calculateAndEmitStats(emotionRecordsRef.current);
+
                                         setEmotionHistory(prev => {
                                             const newScore = getEmotionScore(data.emotion);
                                             const newPoint = {

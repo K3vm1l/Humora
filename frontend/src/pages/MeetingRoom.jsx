@@ -10,7 +10,7 @@ export default function MeetingRoom() {
     const location = useLocation()
     const userName = location.state?.userName || 'Gość'
     const { isAIEnabled = false, aiIP = '' } = location.state || {}
-
+    const [localAIFinalStats, setLocalAIFinalStats] = useState({ dominant: 'Brak', percentages: {} });
     const [myPeerId, setMyPeerId] = useState('')
     const [remotePeerId, setRemotePeerId] = useState('')
     const [remoteUserName, setRemoteUserName] = useState('Oczekiwanie...')
@@ -209,11 +209,25 @@ export default function MeetingRoom() {
         }
         if (peerInstance.current) peerInstance.current.destroy();
 
-        // Save meeting end time if tracked
-        if (currentMeetingId) {
+        // Zapisujemy spotkanie i podsumowanie AI do bazy
+        if (currentMeetingId && session?.user?.id) {
+            // 1. Aktualizacja czasu
             await supabase.from('meetings').update({
                 ended_at: new Date().toISOString(),
             }).eq('id', currentMeetingId);
+
+            // 2. Wysłanie danych AI (jeśli są dostępne)
+            if (localAIFinalStats.dominant !== 'Brak') {
+                await supabase.from('meeting_summaries').insert([{
+                    user_id: session.user.id,
+                    room_id: roomId,
+                    duration_seconds: callSeconds,
+                    dominant_emotion: localAIFinalStats.dominant,
+                    emotion_stats: localAIFinalStats.percentages,
+                    timeline_data: localAIFinalStats.timeline,
+                    created_at: new Date().toISOString()
+                }]);
+            }
         }
 
         navigate('/');
@@ -290,7 +304,6 @@ export default function MeetingRoom() {
         <div className="flex h-screen bg-[#0f172a] text-white overflow-hidden">
 
             {/* Main Content Area (Videos) */}
-            {/* Main Content Area (Videos) */}
             <div className="flex-1 flex flex-col items-center justify-center p-4 min-h-0 overflow-hidden relative">
                 {/* Header Info (Top Left) */}
                 <div className="fixed top-4 left-4 z-50 flex gap-2 bg-slate-900/80 backdrop-blur-md px-6 py-2 rounded-full border border-white/10 text-xs shadow-xl hover:bg-slate-900 transition-colors">
@@ -329,6 +342,7 @@ export default function MeetingRoom() {
                             isVideoOff={isVideoOff}
                             showControls={true}
                             isHandRaised={raisedHands.has(session?.user?.id)}
+                            onStatsUpdate={setLocalAIFinalStats}
                         />
                     </div>
 
